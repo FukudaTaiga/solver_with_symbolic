@@ -1,3 +1,3 @@
 pub trait Recognizable<T> {
-  fn recognize(&self, input: T) -> bool;
+  fn run(&self, input: &[T]) -> bool;
 }
