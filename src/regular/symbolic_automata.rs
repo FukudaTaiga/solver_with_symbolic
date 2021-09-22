@@ -1,42 +1,39 @@
 #![allow(dead_code)]
 use super::recognizable::Recognizable;
 use crate::boolean_algebra::BoolAlg;
+use crate::state::State;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::rc::Rc;
-
-static mut INTERNAL: u64 = 0;
-
-#[derive(Debug, Hash, Eq, Clone)]
-pub struct State {
-  value: u64,
-}
-impl State {
-  pub fn new() -> State {
-    unsafe {
-      INTERNAL += 1;
-      State { value: INTERNAL }
-    }
-  }
-}
-impl PartialEq for State {
-  fn eq(&self, other: &Self) -> bool {
-    //std::ptr::eq(self, other)
-    self.value == other.value
-  }
-}
 
 /**
  * symbolic automata
  */
 #[derive(Debug)]
-pub struct SymFA<T: BoolAlg> {
+pub struct SymFA<T: BoolAlg + Eq + Hash> {
   pub states: HashSet<Rc<State>>,
   pub initial_state: Rc<State>,
   pub final_states: HashSet<Rc<State>>,
   pub transition: HashMap<(Rc<State>, Rc<T>), Rc<State>>,
 }
-impl<T: BoolAlg> SymFA<T> {
+impl<T: BoolAlg + Eq + Hash> SymFA<T> {
+  pub fn new(
+    states: HashSet<Rc<State>>,
+    initial_state: Rc<State>,
+    final_states: HashSet<Rc<State>>,
+    transition: HashMap<(Rc<State>, Rc<T>), Rc<State>>,
+  ) -> SymFA<T> {
+    let mut sfa = SymFA {
+      states,
+      initial_state,
+      final_states,
+      transition,
+    };
+    sfa.minimize();
+    sfa
+  }
+
   fn state_predicate<'a>(&self, q: State) -> RefCell<Rc<T>> {
     let result = RefCell::new(Rc::new(T::top()));
     for (s, phi) in self.transition.keys() {
@@ -47,27 +44,65 @@ impl<T: BoolAlg> SymFA<T> {
 
     return result;
   }
-}
-impl<T: BoolAlg> Recognizable<T::Domain> for SymFA<T> {
-  fn run(&self, input: &[T::Domain]) -> bool {
-    let mut current_state = &self.initial_state;
 
-    for a in input {
-      let mut available_states = self.transition.iter().filter_map(|((state, phi), next)| {
-        if *state == *current_state && phi.denotate(a) {
-          Some(next)
-        } else {
-          None
+  fn minimize(&mut self) {
+    let mut stack = vec![Rc::clone(&self.initial_state)];
+    let mut reachables = vec![];
+
+    while let Some(state) = stack.pop() {
+      reachables.push(Rc::clone(&state));
+
+      for ((p, _), q) in &self.transition {
+        if *p == state && !reachables.contains(&q) {
+          stack.push(Rc::clone(&q));
         }
-      });
-
-      current_state = match available_states.next() {
-        Some(s) => s,
-        None => return false,
       }
     }
 
-    self.final_states.contains(current_state)
+    self.states = reachables.into_iter().collect();
+    self.transition = self
+      .transition
+      .iter()
+      .filter_map(|((state, phi), next)| {
+        if self.states.contains(state) && self.states.contains(next) {
+          Some(((Rc::clone(state), Rc::clone(phi)), Rc::clone(next)))
+        } else {
+          None
+        }
+      })
+      .collect();
+    self.final_states = self
+      .final_states
+      .intersection(&self.states)
+      .map(|final_state| Rc::clone(final_state))
+      .collect();
+  }
+}
+impl<T: BoolAlg + Eq + Hash> Recognizable<T::Domain> for SymFA<T> {
+  fn run(&self, input: &[T::Domain]) -> bool {
+    let mut current_states = HashSet::new();
+    current_states.insert(Rc::clone(&self.initial_state));
+
+    for a in input {
+      current_states = current_states
+        .into_iter()
+        .flat_map(|current_state| {
+          self
+            .transition
+            .iter()
+            .filter_map(|((state, phi), next)| {
+              if *state == current_state && phi.denotate(a) {
+                Some(Rc::clone(next))
+              } else {
+                None
+              }
+            })
+            .collect::<HashSet<_>>()
+        })
+        .collect::<HashSet<_>>();
+    }
+
+    !&current_states.is_disjoint(&self.final_states)
   }
 }
 
@@ -105,13 +140,16 @@ mod tests {
   }
 
   #[test]
-  fn create_sym_fa() {
+  fn create_sfa_without_new() {
     let mut states = HashSet::new();
     let mut final_states = HashSet::new();
     let mut transition = HashMap::new();
 
     let initial_state = Rc::new(State::new());
     states.insert(Rc::clone(&initial_state));
+
+    let rebundon_state = Rc::new(State::new());
+    states.insert(Rc::clone(&rebundon_state));
 
     let final_state = Rc::new(State::new());
     states.insert(Rc::clone(&final_state));
@@ -146,7 +184,56 @@ mod tests {
       transition,
     };
 
-    eprintln!("{:#?}", sym_fa);
+    println!("{:#?}", sym_fa);
+    assert_eq!(sym_fa.states.len(), 3);
+    assert!(sym_fa.run(&"afvfdl".chars().collect::<Vec<char>>()[..]));
+    assert!(!sym_fa.run(&"".chars().collect::<Vec<char>>()[..]));
+    assert!(sym_fa.run(&"awa".chars().collect::<Vec<char>>()[..]));
+    assert!(sym_fa.run(&"cwbwad".chars().collect::<Vec<char>>()[..]));
+    assert!(!sym_fa.run(&"cwbwadww".chars().collect::<Vec<char>>()[..]));
+  }
+
+  #[test]
+  fn create_sfa_with_new() {
+    let mut states = HashSet::new();
+    let mut final_states = HashSet::new();
+    let mut transition = HashMap::new();
+
+    let initial_state = Rc::new(State::new());
+    states.insert(Rc::clone(&initial_state));
+
+    let rebundon_state = Rc::new(State::new());
+    states.insert(Rc::clone(&rebundon_state));
+
+    let final_state = Rc::new(State::new());
+    states.insert(Rc::clone(&final_state));
+    final_states.insert(Rc::clone(&final_state));
+
+    let abc = Rc::new(Predicate::range(Some('a'), Some('d')).unwrap());
+    let not_abc = Rc::new(Predicate::not(&abc));
+    transition.insert(
+      (Rc::clone(&initial_state), Rc::clone(&abc)),
+      Rc::clone(&final_state),
+    );
+    transition.insert(
+      (Rc::clone(&initial_state), Rc::clone(&not_abc)),
+      Rc::clone(&initial_state),
+    );
+
+    let w = Rc::new(Predicate::eq('w'));
+    let not_w = Rc::new(Predicate::not(&w));
+    transition.insert(
+      (Rc::clone(&final_state), Rc::clone(&w)),
+      Rc::clone(&initial_state),
+    );
+    transition.insert(
+      (Rc::clone(&final_state), Rc::clone(&not_w)),
+      Rc::clone(&final_state),
+    );
+
+    let sym_fa = SymFA::new(states, initial_state, final_states, transition);
+    println!("{:#?}", sym_fa);
+    assert_eq!(sym_fa.states.len(), 2);
     assert!(sym_fa.run(&"afvfdl".chars().collect::<Vec<char>>()[..]));
     assert!(!sym_fa.run(&"".chars().collect::<Vec<char>>()[..]));
     assert!(sym_fa.run(&"awa".chars().collect::<Vec<char>>()[..]));

@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use crate::transducer::term::{FunctionTerm, Lambda};
 use std::rc::Rc;
 
 /**
@@ -28,9 +29,11 @@ pub trait BoolAlg {
 
 const INVALID_RANGE: &str = "Invalid range Error: left argument should be smaller than right";
 
-//for Primitive Predicate
+/**
+ * for Primitive Predicate
+ */
 #[derive(Debug, PartialEq, Eq, Hash)]
-pub enum Predicate<'a, T: PartialOrd + Copy> {
+pub enum Predicate<'a, T: PartialOrd + Copy + Eq> {
   Top,
   Bot,
   Eq(T),
@@ -40,11 +43,15 @@ pub enum Predicate<'a, T: PartialOrd + Copy> {
     right: Option<T>,
   },
   InSet(&'a [T]),
-  And(Rc<Predicate<'a, T>>, Rc<Predicate<'a, T>>),
-  Or(Rc<Predicate<'a, T>>, Rc<Predicate<'a, T>>),
-  Not(Rc<Predicate<'a, T>>),
+  And(Rc<Self>, Rc<Self>),
+  Or(Rc<Self>, Rc<Self>),
+  Not(Rc<Self>),
+  WithLambda {
+    p: Rc<Predicate<'a, T>>,
+    f: Rc<Lambda<Self>>,
+  },
 }
-impl<T: PartialOrd + Copy> Predicate<'_, T> {
+impl<'a, T: PartialOrd + Copy + Eq> Predicate<'a, T> {
   pub fn eq(a: T) -> Self {
     Predicate::Eq(a)
   }
@@ -72,8 +79,15 @@ impl<T: PartialOrd + Copy> Predicate<'_, T> {
       Predicate::InSet(elements)
     }
   }
+
+  pub fn with_lambda(self: &Rc<Self>, f: Rc<Lambda<Self>>) -> Predicate<'a, T> {
+    Predicate::WithLambda {
+      p: Rc::clone(&self),
+      f: Rc::clone(&f),
+    }
+  }
 }
-impl<T: PartialOrd + Copy> BoolAlg for Predicate<'_, T> {
+impl<T: PartialOrd + Copy + Eq> BoolAlg for Predicate<'_, T> {
   type Domain = T;
 
   fn and(self: &Rc<Self>, other: &Rc<Self>) -> Self {
@@ -105,21 +119,19 @@ impl<T: PartialOrd + Copy> BoolAlg for Predicate<'_, T> {
         ref left,
         ref right,
       } => {
-        let is_upper = match left {
+        return match left {
           Some(l) => *l <= *arg,
           None => true,
-        };
-        let is_lower = match right {
+        } && match right {
           Some(r) => *arg < *r,
           None => true,
-        };
-
-        is_upper && is_lower
+        }
       }
       Predicate::InSet(elements) => elements.contains(arg),
       Predicate::And(ref p, ref q) => p.denotate(arg) && q.denotate(arg),
       Predicate::Or(ref p, ref q) => p.denotate(arg) || q.denotate(arg),
       Predicate::Not(ref p) => !p.denotate(arg),
+      Predicate::WithLambda { ref p, ref f } => p.denotate(f.apply(arg)),
     }
   }
 }
@@ -192,10 +204,10 @@ mod tests {
 
     let err = Predicate::range(Some('k'), Some('f'));
     assert_eq!(Err(INVALID_RANGE), err);
-    let err = err.unwrap_or(Predicate::Bot);
-    assert!(!err.denotate(arg_b));
-    assert!(!err.denotate(arg_f));
-    assert!(!err.denotate(arg_z));
+    let bot = err.unwrap_or(Predicate::Bot);
+    assert!(!bot.denotate(arg_b));
+    assert!(!bot.denotate(arg_f));
+    assert!(!bot.denotate(arg_z));
 
     let eq = Predicate::range(Some('f'), Some('f'));
     assert_eq!(Ok(Predicate::Eq('f')), eq);
@@ -217,5 +229,57 @@ mod tests {
     assert!(!avd.denotate(&'c'));
     assert!(!avd.denotate(&'h'));
     assert!(!avd.denotate(&'i'));
+  }
+  #[test]
+  fn with_lambda_test() {
+    let cond_x = Rc::new(Predicate::eq('x'));
+    let cond_num = Rc::new(Predicate::range(Some('0'), Some('9')).unwrap());
+    let cond_set_xyz = Rc::new(Predicate::in_set(&['x', 'y', 'z']));
+
+    let cnst;
+    let map;
+    let fnc;
+    {
+      let fnc_cond1 = Rc::new(Predicate::range(Some('f'), Some('l')).unwrap()); //f, g, h, i, j, k
+      let fnc_cond2 = Rc::new(Predicate::in_set(&['b', 's', 'w']));
+
+      cnst = Rc::new(Lambda::<Predicate<'_, char>>::Constant('x'));
+      map = Rc::new(Lambda::<Predicate<'_, char>>::Mapping(vec![
+        ('a', 'x'),
+        ('b', 'y'),
+        ('c', 'z'),
+      ]));
+      fnc = Rc::new(Lambda::<Predicate<'_, char>>::Function(vec![
+        (Rc::clone(&fnc_cond1), '1'),
+        (Rc::clone(&fnc_cond2), '2'),
+      ]));
+    }
+
+    let cond_x = cond_x.with_lambda(cnst);
+    assert!(cond_x.denotate(&'a'));
+    assert!(cond_x.denotate(&'x'));
+    assert!(cond_x.denotate(&'z'));
+    assert!(cond_x.denotate(&'9'));
+
+    let cond_set_xyz = cond_set_xyz.with_lambda(map);
+    assert!(cond_set_xyz.denotate(&'a'));
+    assert!(cond_set_xyz.denotate(&'b'));
+    assert!(cond_set_xyz.denotate(&'c'));
+    assert!(!cond_set_xyz.denotate(&'0'));
+    assert!(!cond_set_xyz.denotate(&'s'));
+
+    let cond_num = cond_num.with_lambda(fnc);
+    assert!(cond_num.denotate(&'f'));
+    assert!(cond_num.denotate(&'g'));
+    assert!(cond_num.denotate(&'h'));
+    assert!(cond_num.denotate(&'i'));
+    assert!(cond_num.denotate(&'k'));
+    assert!(!cond_num.denotate(&'l'));
+
+    assert!(cond_num.denotate(&'b'));
+    assert!(cond_num.denotate(&'s'));
+    assert!(cond_num.denotate(&'w'));
+    assert!(!cond_num.denotate(&'p'));
+    assert!(!cond_num.denotate(&'a'));
   }
 }
