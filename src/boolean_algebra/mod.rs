@@ -28,7 +28,9 @@ pub trait BoolAlg {
 
 const INVALID_RANGE: &str = "Invalid range Error: left argument should be smaller than right";
 
-//for Primitive Predicate
+/**
+ * for Primitive Predicate
+ */
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Predicate<'a, T: PartialOrd + Copy> {
   Top,

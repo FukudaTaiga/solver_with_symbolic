@@ -2,6 +2,7 @@
 use super::recognizable::Recognizable;
 use super::symbolic_automata::*;
 use crate::boolean_algebra::{BoolAlg, Predicate};
+use crate::state::State;
 use std::cmp::PartialOrd;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -29,7 +30,7 @@ pub enum Regex<T: PartialOrd> {
   Star(Box<Regex<T>>),
   Not(Box<Regex<T>>),
 }
-impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
+impl<T: PartialOrd + Copy + Eq + Hash + std::fmt::Debug> Regex<T> {
   /**
    * identifier must be '!' or '_' \
    * map them Empty and All
@@ -84,7 +85,9 @@ impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
     }
   }
 
+  //with, thompson  --- clushkul, partial derivative
   pub fn to_sym_fa<'a>(&self) -> SymFA<Predicate<'a, T>> {
+    let res: SymFA<Predicate<'a, T>>;
     match self {
       Regex::Empty => {
         let initial_state = Rc::new(State::new());
@@ -93,12 +96,7 @@ impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
         let transition = HashMap::new();
         states.insert(Rc::clone(&initial_state));
 
-        SymFA {
-          states,
-          initial_state,
-          final_states,
-          transition,
-        }
+        res = SymFA::new(states, initial_state, final_states, transition)
       }
       Regex::Epsilon => {
         let initial_state = Rc::new(State::new());
@@ -117,12 +115,7 @@ impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
           Rc::clone(&refusal_state),
         );
 
-        SymFA {
-          states,
-          initial_state,
-          final_states,
-          transition,
-        }
+        res = SymFA::new(states, initial_state, final_states, transition)
       }
       Regex::Element(a) => {
         let initial_state = Rc::new(State::new());
@@ -140,12 +133,7 @@ impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
           Rc::clone(&final_state),
         );
 
-        SymFA {
-          states,
-          initial_state,
-          final_states,
-          transition,
-        }
+        res = SymFA::new(states, initial_state, final_states, transition)
       }
       Regex::All => {
         let initial_state = Rc::new(State::new());
@@ -164,12 +152,7 @@ impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
           Rc::clone(&final_state),
         );
 
-        SymFA {
-          states,
-          initial_state,
-          final_states,
-          transition,
-        }
+        res = SymFA::new(states, initial_state, final_states, transition)
       }
       Regex::Range(left, right) => {
         let initial_state = Rc::new(State::new());
@@ -191,12 +174,7 @@ impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
           Rc::clone(&final_state),
         );
 
-        SymFA {
-          states,
-          initial_state,
-          final_states,
-          transition,
-        }
+        res = SymFA::new(states, initial_state, final_states, transition)
       }
       Regex::Concat(r1, r2) => {
         let SymFA {
@@ -208,37 +186,41 @@ impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
         let SymFA {
           states: s2,
           initial_state: i2,
-          final_states,
+          final_states: f2,
           transition: t2,
         } = r2.to_sym_fa();
 
         let states = s1.into_iter().chain(s2.into_iter()).collect::<HashSet<_>>();
-        let filtered = f1
-          .iter()
-          .flat_map(|final_state| {
-            t2.iter()
-              .filter_map(|((state2, phi2), next2)| {
-                if *state2 == i2 {
-                  Some(((Rc::clone(final_state), Rc::clone(phi2)), Rc::clone(next2)))
-                } else {
-                  None
-                }
-              })
-              .collect::<HashMap<_, _>>()
-          })
-          .collect::<HashMap<_, _>>();
+        let final_states = if f2.contains(&i2) {
+          f2.into_iter()
+            .chain(f1.iter().map(|final_state| Rc::clone(final_state)))
+            .collect()
+        } else {
+          f2
+        };
         let transition = t1
           .into_iter()
-          .chain(t2.into_iter())
-          .chain(filtered)
+          .chain(t2.into_iter().flat_map(|((state2, phi2), next2)| {
+            if state2 == i2 {
+              f1.iter()
+                .map(|final_state| {
+                  (
+                    (Rc::clone(final_state), Rc::clone(&phi2)),
+                    Rc::clone(&next2),
+                  )
+                })
+                .chain(vec![(
+                  (Rc::clone(&state2), Rc::clone(&phi2)),
+                  Rc::clone(&next2),
+                )])
+                .collect()
+            } else {
+              vec![((Rc::clone(&state2), Rc::clone(&phi2)), Rc::clone(&next2))]
+            }
+          }))
           .collect::<HashMap<_, _>>();
 
-        SymFA {
-          states,
-          initial_state,
-          final_states,
-          transition,
-        }
+        res = SymFA::new(states, initial_state, final_states, transition)
       }
       Regex::Or(r1, r2) => {
         let SymFA {
@@ -292,12 +274,7 @@ impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
           }))
           .collect::<HashMap<_, _>>();
 
-        SymFA {
-          states,
-          initial_state,
-          final_states,
-          transition,
-        }
+        res = SymFA::new(states, initial_state, final_states, transition)
       }
       Regex::Not(r) => {
         let SymFA {
@@ -309,16 +286,11 @@ impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
 
         let final_states = &states - &f;
 
-        SymFA {
-          states,
-          initial_state,
-          final_states,
-          transition,
-        }
+        res = SymFA::new(states, initial_state, final_states, transition)
       }
       Regex::Star(r) => {
         let SymFA {
-          states,
+          states: s,
           initial_state: i,
           final_states: f,
           transition: t,
@@ -326,10 +298,16 @@ impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
 
         let initial_state = Rc::new(State::new());
 
+        let states = s
+          .iter()
+          .map(|state| Rc::clone(state))
+          .chain([Rc::clone(&initial_state)])
+          .collect();
+
         let final_states = f
           .iter()
-          .map(|fs| Rc::clone(fs))
-          .chain(vec![Rc::clone(&initial_state)])
+          .map(|final_state| Rc::clone(final_state))
+          .chain([Rc::clone(&initial_state)])
           .collect();
 
         let transition = t
@@ -352,14 +330,12 @@ impl<T: PartialOrd + Copy + Eq + Hash> Regex<T> {
           })
           .collect();
 
-        SymFA {
-          states,
-          initial_state,
-          final_states,
-          transition,
-        }
+        res = SymFA::new(states, initial_state, final_states, transition)
       }
     }
+
+    println!("to_sym_fa: {:#?}", res);
+    res
   }
 }
 impl Regex<char> {
