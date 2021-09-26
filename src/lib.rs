@@ -1,4 +1,4 @@
-mod regular;
 mod boolean_algebra;
-mod transducer;
+mod regular;
 mod state;
+mod transducer;
