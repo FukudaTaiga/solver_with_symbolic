@@ -1,4 +1,4 @@
-mod sst;
-mod sst_factory;
+pub mod sst;
+pub mod sst_factory;
 pub mod term;
-mod transducer;
+pub mod transducer;
