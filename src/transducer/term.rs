@@ -1,4 +1,4 @@
-use crate::boolean_algebra::BoolAlg;
+use crate::boolean_algebra::{BoolAlg, Predicate};
 use std::{borrow::Borrow, fmt::Debug, hash::Hash, rc::Rc};
 
 pub trait FunctionTerm: Debug + PartialEq + Eq + Hash {
@@ -17,7 +17,7 @@ pub trait FunctionTerm: Debug + PartialEq + Eq + Hash {
 /**
  * for Primitive Function Term
  */
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Lambda<T: BoolAlg> {
   Id,
   Constant(T::Domain),
@@ -80,27 +80,57 @@ where
   }
 }
 
-#[derive(Debug, Eq, Hash, Clone)]
-pub struct Variable;
+static mut INTERNAL: usize = 0;
+fn inc() -> usize {
+  unsafe {
+    INTERNAL += 1;
+    INTERNAL
+  }
+}
+
+#[derive(Debug, Eq, Hash)]
+pub struct Variable(usize);
 impl Variable {
   pub fn new() -> Variable {
-    Variable
+    Variable(inc())
+  }
+}
+impl Clone for Variable {
+  fn clone(&self) -> Self {
+    Variable(self.0)
   }
 }
 impl PartialEq for Variable {
   fn eq(&self, other: &Self) -> bool {
-    std::ptr::eq(self, other)
+    //std::ptr::eq(self, other)
+    self.0 == other.0
   }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum UpdateComp<T: FunctionTerm> {
-  F(T),
-  X(Rc<Variable>),
+pub trait VariableImpl: Debug + Eq + Hash + Clone {
+  fn new() -> Self;
+}
+impl VariableImpl for Variable {
+  fn new() -> Self {
+    Variable::new()
+  }
+}
+impl VariableImpl for Rc<Variable> {
+  fn new() -> Self {
+    Rc::new(Variable::new())
+  }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum OutputComp<T> {
-  A(T),
-  X(Rc<Variable>),
+#[derive(Debug, PartialEq, Clone)]
+pub enum UpdateComp<T: FunctionTerm, V: VariableImpl> {
+  F(T),
+  X(V),
 }
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum OutputComp<T, V: VariableImpl> {
+  A(T),
+  X(V),
+}
+
+pub type FunctionTermImpl<T> = Lambda<Predicate<T>>;

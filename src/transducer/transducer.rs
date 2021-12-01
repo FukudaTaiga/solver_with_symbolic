@@ -1,36 +1,56 @@
-use super::term::*;
-use crate::boolean_algebra::{BoolAlg, Predicate};
-use crate::state::{State, StateMachine};
+use super::term::{FunctionTerm, FunctionTermImpl};
+use crate::{
+  boolean_algebra::BoolAlg,
+  state::{StateImpl, StateMachine},
+};
 use std::{
   collections::{HashMap, HashSet},
   fmt::Debug,
-  hash::Hash,
   rc::Rc,
 };
 
-type RState = Rc<State>;
+type Domain<F> = <<F as FunctionTerm>::Underlying as BoolAlg>::Domain;
+type Source<F, S> = (S, Rc<<F as FunctionTerm>::Underlying>);
+type Target<F, S> = (S, Vec<Rc<F>>);
 
 /**
  * implementation of symbolic finite state transducer (SFST)
  */
-#[derive(Debug, PartialEq)]
-pub struct SymFST<S: FunctionTerm> {
-  states: HashSet<RState>,
-  initial_state: RState,
-  final_states: HashSet<RState>,
-  transition: HashMap<(RState, Rc<S::Underlying>), (RState, Vec<Rc<S>>)>,
+#[derive(Debug, PartialEq, Clone)]
+pub struct SymFST<F, S>
+where
+  F: FunctionTerm,
+  S: StateImpl,
+{
+  states: HashSet<S>,
+  initial_state: S,
+  final_states: HashSet<S>,
+  transition: HashMap<Source<F, S>, Target<F, S>>,
 }
-impl<S: FunctionTerm> SymFST<S> {
-  pub fn run(
-    &self,
-    input: &[<S::Underlying as BoolAlg>::Domain],
-  ) -> Vec<Vec<<S::Underlying as BoolAlg>::Domain>>
-  where
-    <S::Underlying as BoolAlg>::Domain: Copy,
-  {
+impl<F, S> SymFST<F, S>
+where
+  F: FunctionTerm + Clone,
+  S: StateImpl,
+{
+  pub fn new(
+    states: HashSet<S>,
+    initial_state: S,
+    final_states: HashSet<S>,
+    transition: HashMap<Source<F, S>, Target<F, S>>,
+  ) -> Self {
+    Self {
+      states,
+      initial_state,
+      final_states,
+      transition,
+    }
+    .minimize()
+  }
+
+  pub fn run(&self, input: &[Domain<F>]) -> Vec<Vec<Domain<F>>> {
     let mut input = input.iter();
     let mut possibilities = vec![];
-    possibilities.push((Rc::clone(&self.initial_state), vec![]));
+    possibilities.push((self.initial_state.clone(), vec![]));
 
     while let Some(c) = input.next() {
       possibilities = possibilities
@@ -42,8 +62,8 @@ impl<S: FunctionTerm> SymFST<S> {
             .filter_map(|((s1, phi), (s2, fs))| {
               if state == s1 && phi.denotate(c) {
                 let mut w = w.clone();
-                w.extend(fs.iter().map(|f| *f.apply(c)));
-                Some((Rc::clone(s2), w))
+                w.extend(fs.iter().map(|f| Domain::<F>::clone(f.apply(c))));
+                Some((s2.clone(), w))
               } else {
                 None
               }
@@ -65,44 +85,28 @@ impl<S: FunctionTerm> SymFST<S> {
       .collect()
   }
 }
-impl<T> SymFST<Lambda<Predicate<T>>>
+impl<F, S> StateMachine for SymFST<F, S>
 where
-  T: PartialOrd + Ord + Copy + PartialEq + Eq + Hash + Debug,
+  F: FunctionTerm + Clone,
+  S: StateImpl,
 {
-  pub fn new(
-    states: HashSet<RState>,
-    initial_state: RState,
-    final_states: HashSet<RState>,
-    transition: HashMap<(RState, Rc<Predicate<T>>), (RState, Vec<Rc<Lambda<Predicate<T>>>>)>,
-  ) -> SymFST<Lambda<Predicate<T>>> {
-    SymFST {
-      states,
-      initial_state,
-      final_states,
-      transition,
-    }
-    .minimize()
-  }
-}
-impl<T> StateMachine for SymFST<Lambda<Predicate<T>>>
-where
-  T: PartialOrd + Ord + Copy + PartialEq + Eq + Hash + Debug,
-{
-  type Source = (RState, Rc<Predicate<T>>);
-  type Target = (RState, Vec<Rc<Lambda<Predicate<T>>>>);
-  type FinalSet = HashSet<RState>;
+  type StateType = S;
 
-  fn states(&self) -> &HashSet<Rc<State>> {
+  type Source = Source<F, S>;
+  type Target = Target<F, S>;
+  type FinalSet = HashSet<S>;
+
+  fn states(&self) -> &HashSet<Self::StateType> {
     &self.states
   }
-  fn states_mut(&mut self) -> &mut HashSet<Rc<State>> {
+  fn states_mut(&mut self) -> &mut HashSet<Self::StateType> {
     &mut self.states
   }
 
-  fn initial_state(&self) -> &Rc<State> {
+  fn initial_state(&self) -> &Self::StateType {
     &self.initial_state
   }
-  fn initial_state_mut(&mut self) -> &mut Rc<State> {
+  fn initial_state_mut(&mut self) -> &mut Self::StateType {
     &mut self.initial_state
   }
 
@@ -112,18 +116,27 @@ where
   fn final_set_mut(&mut self) -> &mut Self::FinalSet {
     &mut self.final_states
   }
-  fn final_set_filter_by_states(&self, reachables: &HashSet<Rc<State>>) -> Self::FinalSet {
+  fn final_set_filter_by_states<U: FnMut(&Self::StateType) -> bool>(
+    &self,
+    mut filter: U,
+  ) -> Self::FinalSet {
     self
       .final_states
-      .intersection(reachables)
-      .map(|final_state| Rc::clone(final_state))
+      .iter()
+      .filter_map(|final_state| {
+        if filter(final_state) {
+          Some(final_state.clone())
+        } else {
+          None
+        }
+      })
       .collect()
   }
 
-  fn source_to_state(s: &Self::Source) -> &Rc<State> {
+  fn source_to_state(s: &Self::Source) -> &Self::StateType {
     &s.0
   }
-  fn target_to_state(t: &Self::Target) -> &Rc<State> {
+  fn target_to_state(t: &Self::Target) -> &Self::StateType {
     &t.0
   }
 
@@ -133,6 +146,9 @@ where
   fn transition_mut(&mut self) -> &mut HashMap<Self::Source, Self::Target> {
     &mut self.transition
   }
+  fn is_unreachable(s: &Self::Source) -> bool {
+    s.1.is_bottom()
+  }
 }
 
-pub type Transducer<T> = SymFST<Lambda<Predicate<T>>>;
+pub type Transducer<T, S> = SymFST<FunctionTermImpl<T>, S>;
