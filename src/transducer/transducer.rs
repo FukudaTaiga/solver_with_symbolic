@@ -54,23 +54,23 @@ where
 
     while let Some(c) = input.next() {
       possibilities = possibilities
-        .iter()
+        .into_iter()
         .flat_map(|(state, w)| {
           self
             .transition
             .iter()
-            .filter_map(|((s1, phi), (s2, fs))| {
-              if state == s1 && phi.denotate(c) {
+            .filter_map(move |((p, phi), (q, map))| {
+              if state == *p && phi.denotate(c) {
                 let mut w = w.clone();
-                w.extend(fs.iter().map(|f| Domain::<F>::clone(f.apply(c))));
-                Some((s2.clone(), w))
+                w.extend(map.into_iter().map(|f| Domain::<F>::clone(f.apply(c))));
+                Some((S::clone(q), w))
               } else {
                 None
               }
             })
             .collect::<Vec<_>>()
         })
-        .collect::<Vec<_>>()
+        .collect()
     }
 
     possibilities

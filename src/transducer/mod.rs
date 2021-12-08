@@ -65,34 +65,29 @@ mod tests {
     }
 
     fn replace(&self) -> Sst<char, Rc<State>, Rc<Variable>> {
-      let builder = SstBuilder::blank();
-      builder.replace_reg(
+      SstBuilder::replace_reg(
         self.regex.clone(),
         self.replace_tar.chars().map(|c| OutputComp::A(c)).collect(),
       )
     }
 
     fn replace_all(&self) -> Sst<char, Rc<State>, Rc<Variable>> {
-      let builder = SstBuilder::blank();
-      builder.replace_all_reg(
+      SstBuilder::replace_all_reg(
         self.regex.clone(),
         self.replace_tar.chars().map(|c| OutputComp::A(c)).collect(),
       )
     }
 
     fn id(&self) -> Sst<char, Rc<State>, Rc<Variable>> {
-      let builder = SstBuilder::blank();
-      builder.identity()
+      SstBuilder::identity()
     }
 
     fn reverse(&self) -> Sst<char, Rc<State>, Rc<Variable>> {
-      let builder = SstBuilder::blank();
-      builder.reverse()
+      SstBuilder::reverse()
     }
 
     fn replace_wrap(&self) -> Sst<CharWrap, Rc<State>, Rc<Variable>> {
-      let builder = SstBuilder::blank();
-      builder.replace_reg(
+      SstBuilder::replace_reg(
         self.regex_wrap.clone(),
         self
           .replace_tar
@@ -103,8 +98,7 @@ mod tests {
     }
 
     fn replace_all_wrap(&self) -> Sst<CharWrap, Rc<State>, Rc<Variable>> {
-      let builder = SstBuilder::blank();
-      builder.replace_all_reg(
+      SstBuilder::replace_all_reg(
         self.regex_wrap.clone(),
         self
           .replace_tar
@@ -115,21 +109,19 @@ mod tests {
     }
 
     fn id_wrap(&self) -> Sst<CharWrap, Rc<State>, Rc<Variable>> {
-      let builder = SstBuilder::blank();
-      builder.identity()
+      SstBuilder::identity()
     }
 
     fn reverse_wrap(&self) -> Sst<CharWrap, Rc<State>, Rc<Variable>> {
-      let builder = SstBuilder::blank();
-      builder.reverse()
+      SstBuilder::reverse()
     }
   }
 
   #[test]
-  fn update_merge() {
+  fn merge() {
     let setup = Setup::new();
 
-    let rep_rev = setup.replace().update_merge(setup.reverse());
+    let rep_rev = setup.replace().merge(setup.reverse());
 
     {
       assert_eq!(String::from_iter(&rep_rev.run(&chars("")[..])[0]), "");
@@ -151,7 +143,7 @@ mod tests {
       );
     }
 
-    let id_all = setup.id().update_merge(setup.replace_all());
+    let id_all = setup.id().merge(setup.replace_all());
 
     {
       assert_eq!(String::from_iter(&id_all.run(&chars("")[..])[0]), "");
@@ -181,16 +173,16 @@ mod tests {
     let id = setup.id();
     assert!(id.states().len() == 1 && id.variables().len() == 1);
     assert_eq!(String::from_iter(&id.run(&chars("xyz")[..])[0]), "xyz");
-    let dup = id.update_merge(setup.id());
+    let dup = id.merge(setup.id());
     assert!(dup.states().len() == 1 && dup.variables().len() == 2);
     assert_eq!(String::from_iter(&dup.run(&chars("xyz")[..])[0]), "xyzxyz");
-    let tri = dup.update_merge(setup.id());
+    let tri = dup.merge(setup.id());
     assert!(tri.states().len() == 1 && tri.variables().len() == 3);
     assert_eq!(
       String::from_iter(&tri.run(&chars("xyz")[..])[0]),
       "xyzxyzxyz"
     );
-    let qua = tri.update_merge(setup.id());
+    let qua = tri.merge(setup.id());
     assert!(qua.states().len() == 1 && qua.variables().len() == 4);
     assert_eq!(
       String::from_iter(&qua.run(&chars("xyz")[..])[0]),
@@ -202,7 +194,7 @@ mod tests {
   fn chain() {
     let setup = Setup::new();
 
-    let first = setup.id_wrap().update_merge(setup.replace_wrap());
+    let first = setup.id_wrap().merge(setup.replace_wrap());
     eprintln!("{:#?}", first.run(&to_charwrap(&["abcabc"])[..]));
     assert_eq!(
       first.run(&to_charwrap(&["abcabc"])[..]).last(),

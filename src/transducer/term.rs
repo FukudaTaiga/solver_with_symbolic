@@ -36,7 +36,7 @@ impl<T: BoolAlg> Lambda<T> {
 impl<T> FunctionTerm for Lambda<T>
 where
   T: BoolAlg,
-  T::Domain: Copy + Eq,
+  T::Domain: Clone + Eq,
 {
   type Underlying = T;
 
@@ -63,13 +63,16 @@ where
       (Lambda::Id, _) => Rc::clone(other),
       (_, Lambda::Id) => Rc::clone(self),
       (_, Lambda::Constant(_)) => Rc::clone(other),
-      (Lambda::Constant(c), g) => Rc::new(Lambda::Constant(*g.apply(&c))),
+      (Lambda::Constant(c), g) => Rc::new(Lambda::Constant(g.apply(&c).clone())),
       (Lambda::Mapping(map), g) => Rc::new(Lambda::Mapping(
-        map.into_iter().map(|(k, v)| (*k, *g.apply(v))).collect(),
+        map
+          .into_iter()
+          .map(|(k, v)| (k.clone(), g.apply(v).clone()))
+          .collect(),
       )),
       (Lambda::Function(f), g) => Rc::new(Lambda::Function(
         f.into_iter()
-          .map(|(phi, v)| (Rc::clone(phi), *g.apply(v)))
+          .map(|(phi, v)| (Rc::clone(phi), g.apply(v).clone()))
           .collect(),
       )),
     }

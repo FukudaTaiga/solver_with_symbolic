@@ -80,7 +80,7 @@ impl StateImpl for MutableState {
   }
 }
 
-//trait for state machine
+/** trait for state machine */
 pub trait StateMachine: Sized {
   type StateType: StateImpl;
 

@@ -1,6 +1,6 @@
 use super::term::{FunctionTerm, FunctionTermImpl, Lambda, OutputComp, UpdateComp, VariableImpl};
 use crate::boolean_algebra::{BoolAlg, Predicate};
-use crate::char_util::CharWrap;
+use crate::char_util::FromChar;
 use crate::state::{StateImpl, StateMachine};
 use std::{
   collections::{HashMap, HashSet},
@@ -22,11 +22,11 @@ where
   S: StateImpl,
   V: VariableImpl,
 {
-  states: HashSet<S>,
-  variables: HashSet<V>,
-  initial_state: S,
-  output_function: HashMap<S, Output<F, V>>,
-  transition: HashMap<Source<F, S>, Target<F, S, V>>,
+  pub(crate) states: HashSet<S>,
+  pub(crate) variables: HashSet<V>,
+  pub(crate) initial_state: S,
+  pub(crate) output_function: HashMap<S, Output<F, V>>,
+  pub(crate) transition: HashMap<Source<F, S>, Target<F, S, V>>,
 }
 impl<F, S, V> SymSST<F, S, V>
 where
@@ -34,6 +34,17 @@ where
   S: StateImpl,
   V: VariableImpl,
 {
+  pub(crate) fn empty() -> Self {
+    let state = S::new();
+    Self::new(
+      HashSet::from([S::clone(&state)]),
+      HashSet::new(),
+      S::clone(&state),
+      HashMap::from([(state, vec![])]),
+      HashMap::new(),
+    )
+  }
+
   pub fn new(
     states: HashSet<S>,
     variables: HashSet<V>,
@@ -51,34 +62,48 @@ where
     .minimize()
   }
 
+  /**
+   * execute sst with given input.
+   * if a next transition has no correponding sequence for some variable,
+   * deal with as if the transition translates it identically (i.e. x = x)
+   */
   pub fn run(&self, input: &[Domain<F>]) -> Vec<Vec<Domain<F>>> {
     let mut input = input.iter();
     let mut possibilities = vec![];
-    let current_map = HashMap::new();
-    let current_state = self.initial_state.clone();
-    possibilities.push((current_state, current_map));
+    let map = self
+      .variables
+      .iter()
+      .map(|var| (V::clone(var), vec![]))
+      .collect::<HashMap<_, _>>();
+    let state = self.initial_state.clone();
+    possibilities.push((state, map));
 
     while let Some(c) = input.next() {
+      // eprintln!("char: {:?}", c);
+      // eprintln!("possibilities: {:?}", possibilities);
       possibilities = possibilities
         .into_iter()
-        .flat_map(|(state, alpha)| {
+        .flat_map(|(state, map)| {
           self
             .transition
             .iter()
-            .filter_map(move |((s1, phi), (s2, m))| {
-              if *s1 == state && phi.denotate(c) {
+            .filter_map(move |((p, phi), (q, alpha))| {
+              if *p == state && phi.denotate(c) {
                 Some((
-                  S::clone(s2),
-                  m.iter()
-                    .map(|(x, w)| {
+                  S::clone(q),
+                  self
+                    .variables
+                    .iter()
+                    .map(|var| {
                       (
-                        V::clone(x),
-                        w.iter()
-                          .flat_map(|u| match u {
-                            UpdateComp::F(lambda) => {
-                              vec![Domain::<F>::clone(lambda.apply(c))]
-                            }
-                            UpdateComp::X(y) => alpha.get(y).unwrap_or(&Vec::new()).clone(),
+                        V::clone(var),
+                        alpha
+                          .get(var)
+                          .unwrap_or(&vec![UpdateComp::X(V::clone(var))])
+                          .into_iter()
+                          .flat_map(|out| match out {
+                            UpdateComp::F(f) => vec![Domain::<F>::clone(f.apply(c))],
+                            UpdateComp::X(var) => map.get(var).unwrap_or(&vec![]).clone(),
                           })
                           .collect(),
                       )
@@ -89,6 +114,7 @@ where
                 None
               }
             })
+            .collect::<HashMap<_, _>>()
         })
         .collect()
     }
@@ -113,7 +139,7 @@ where
    * Note, it is not a composition nor concatenation.
    * only for used to making normalized ssst in my theory.
    */
-  pub(crate) fn update_merge(self, other: Self) -> Self {
+  pub(crate) fn merge(self, other: Self) -> Self {
     let error_msg = "Uncontrolled states exist. this will happen for developper's error";
 
     let SymSST {
@@ -202,14 +228,15 @@ where
     &self.variables
   }
 }
-impl<S, V> SymSST<FunctionTermImpl<CharWrap>, S, V>
+impl<T, S, V> SymSST<FunctionTermImpl<T>, S, V>
 where
+  T: FromChar,
   S: StateImpl,
   V: VariableImpl,
 {
   /*
    * mainly focus to use in my theory.
-   * link them togeher and separating with CharWrap::Separator
+   * link them togeher and separating with T::separator
    */
   pub(crate) fn chain(self, other: Self) -> Self {
     let SymSST {
@@ -233,45 +260,53 @@ where
     let mut variables = v1.into_iter().chain(v2.into_iter()).collect::<HashSet<_>>();
     let res_of_self = V::new();
 
-    let identity = variables
-      .iter()
-      .map(|v| (V::clone(v), vec![UpdateComp::X(V::clone(v))]))
-      .collect::<HashMap<_, _>>();
+    let mut res_vars = HashSet::new();
+    res_vars.insert(V::clone(&res_of_self));
+    for (fs1, _) in o1.iter() {
+      if let Some((_, u)) = t1.get(&(S::clone(fs1), Predicate::eq(T::separator()))) {
+        for var in u.keys() {
+          res_vars.insert(V::clone(var));
+        }
+      }
+    }
 
-    let add_new_var = |((p, phi), (q, u)): (
-      &(S, Rc<Predicate<CharWrap>>),
-      &(S, UpdateFunction<FunctionTermImpl<CharWrap>, V>),
-    )| {
-      let mut u = u.clone();
-      u.insert(
+    let joint = o1.into_iter().map(|(fs1, out)| {
+      let mut step_to_other = t1
+        .get(&(S::clone(&fs1), Predicate::eq(T::separator())))
+        .map(|(_, u)| u.clone())
+        .unwrap_or(HashMap::new());
+      step_to_other.insert(
         V::clone(&res_of_self),
-        vec![UpdateComp::X(V::clone(&res_of_self))],
+        out
+          .into_iter()
+          .map(|oc| match oc {
+            OutputComp::A(a) => UpdateComp::F(Lambda::constant(a)),
+            OutputComp::X(var) => UpdateComp::X(var),
+          })
+          .collect(),
       );
+      (
+        (fs1, Predicate::eq(T::separator())),
+        (S::clone(&i2), step_to_other),
+      )
+    });
 
-      ((S::clone(p), Rc::clone(phi)), (S::clone(q), u))
+    let extend_transition = |((p, phi), (q, mut u)): (
+      (S, Rc<Predicate<T>>),
+      (S, UpdateFunction<FunctionTermImpl<T>, V>),
+    )| {
+      for var in res_vars.iter() {
+        u.insert(V::clone(&var), vec![UpdateComp::X(V::clone(&var))]);
+      }
+
+      ((p, phi), (q, u))
     };
 
     let transition = t2
-      .iter()
-      .map(add_new_var)
-      .chain(t1.iter().map(add_new_var))
-      .chain(o1.into_iter().map(|(fs1, out)| {
-        let mut step_to_other = identity.clone();
-        step_to_other.insert(
-          V::clone(&res_of_self),
-          out
-            .into_iter()
-            .map(|oc| match oc {
-              OutputComp::A(a) => UpdateComp::F(Lambda::constant(a)),
-              OutputComp::X(var) => UpdateComp::X(var),
-            })
-            .collect(),
-        );
-        (
-          (fs1, Predicate::eq(CharWrap::Separator)),
-          (S::clone(&i2), step_to_other),
-        )
-      }))
+      .into_iter()
+      .map(extend_transition)
+      .chain(t1.iter().map(|(src, trg)| (src.clone(), trg.clone())))
+      .chain(joint)
       .collect();
 
     let output_function = o2
@@ -281,7 +316,7 @@ where
           fs,
           vec![
             OutputComp::X(V::clone(&res_of_self)),
-            OutputComp::A(CharWrap::Separator),
+            OutputComp::A(T::separator()),
           ]
           .into_iter()
           .chain(out.into_iter())

@@ -1,10 +1,10 @@
 use super::sst::Sst;
-use super::term::{FunctionTerm, Lambda, OutputComp, UpdateComp, VariableImpl};
+use super::term::{FunctionTerm, FunctionTermImpl, Lambda, OutputComp, UpdateComp, VariableImpl};
 use crate::boolean_algebra::{BoolAlg, Predicate};
 use crate::char_util::FromChar;
 use crate::regular::{regex::Regex, symbolic_automata::Sfa};
-use crate::smt2::{ReplaceTarget, Transduction, TransductionOp};
-use crate::state::{StateImpl, StateMachine, Mutable};
+use crate::smt2::{ReplaceTarget, StraightLineConstraint, Transduction, TransductionOp};
+use crate::state::{StateImpl, StateMachine};
 use std::{
   collections::{HashMap, HashSet},
   rc::Rc,
@@ -12,19 +12,17 @@ use std::{
 
 pub struct SstBuilder<T: FromChar, S: StateImpl, V: VariableImpl> {
   ssts: Vec<Sst<T, S, V>>,
-  vars: Vec<V>,
-  init_states: Vec<S>
+  var_num: usize,
 }
 impl<T: FromChar, S: StateImpl, V: VariableImpl> SstBuilder<T, S, V> {
-  pub(crate) fn blank() -> Self {
+  pub fn blank() -> Self {
     SstBuilder {
       ssts: vec![],
-      vars: vec![],
-      init_states: vec![]
+      var_num: 0,
     }
   }
 
-  pub fn replace_all_reg(&self, reg: Regex<T>, replace: Vec<OutputComp<T, V>>) -> Sst<T, S, V> {
+  pub fn replace_all_reg(reg: Regex<T>, replace: Vec<OutputComp<T, V>>) -> Sst<T, S, V> {
     assert_ne!(reg, Regex::Empty);
     assert_ne!(reg, Regex::Epsilon);
 
@@ -193,7 +191,7 @@ impl<T: FromChar, S: StateImpl, V: VariableImpl> SstBuilder<T, S, V> {
     )
   }
 
-  pub fn replace_reg(&self, reg: Regex<T>, replace: Vec<OutputComp<T, V>>) -> Sst<T, S, V> {
+  pub fn replace_reg(reg: Regex<T>, replace: Vec<OutputComp<T, V>>) -> Sst<T, S, V> {
     assert_ne!(reg, Regex::Empty);
     assert_ne!(reg, Regex::Epsilon);
 
@@ -358,7 +356,7 @@ impl<T: FromChar, S: StateImpl, V: VariableImpl> SstBuilder<T, S, V> {
     )
   }
 
-  pub fn reverse(&self) -> Sst<T, S, V> {
+  pub fn reverse() -> Sst<T, S, V> {
     let initial_state = S::new();
     let res = V::new();
     let mut states = HashSet::new();
@@ -390,7 +388,7 @@ impl<T: FromChar, S: StateImpl, V: VariableImpl> SstBuilder<T, S, V> {
     )
   }
 
-  pub fn identity(&self) -> Sst<T, S, V> {
+  pub fn identity() -> Sst<T, S, V> {
     let initial_state = S::new();
     let res = V::new();
 
@@ -423,11 +421,11 @@ impl<T: FromChar, S: StateImpl, V: VariableImpl> SstBuilder<T, S, V> {
     )
   }
 
-  pub fn constant(&self, output: &str) -> Sst<T, S, V> {
+  pub fn constant(output: &str) -> Sst<T, S, V> {
     let initial_state = S::new();
     let mut states = HashSet::new();
     states.insert(S::clone(&initial_state));
-    let mut variables = HashSet::new();
+    let variables = HashSet::new();
     let mut output_function = HashMap::new();
     output_function.insert(
       S::clone(&initial_state),
@@ -441,6 +439,276 @@ impl<T: FromChar, S: StateImpl, V: VariableImpl> SstBuilder<T, S, V> {
       (S::clone(&initial_state), Predicate::top()),
       (S::clone(&initial_state), HashMap::new()),
     );
+
+    Sst::new(
+      states,
+      variables,
+      initial_state,
+      output_function,
+      transition,
+    )
+  }
+
+  pub fn init(var_num: usize) -> Self {
+    let mut builder = SstBuilder {
+      ssts: Vec::with_capacity(var_num),
+      var_num,
+    };
+
+    for _ in 0..var_num {
+      builder.ssts.push(SstBuilder::identity());
+    }
+
+    builder
+  }
+
+  pub fn generate(mut self, sl_cons: Vec<StraightLineConstraint<T, S>>) -> Vec<Sst<T, S, V>> {
+    eprintln!("sl {:?}", sl_cons);
+    for StraightLineConstraint(idx, transduction) in sl_cons {
+      self.update(idx, transduction)
+    }
+
+    self.ssts
+  }
+
+  pub fn update(&mut self, idx: usize, transduction: Transduction<T, S>) {
+    let mut vars = Vec::with_capacity(idx);
+    let mut ssts = Vec::with_capacity(idx);
+    for _ in 0..idx {
+      ssts.push(self.empty(&mut vars).merge(Self::identity()));
+    }
+    let mut idx_sst = Sst::empty();
+
+    for transduction_op in transduction.0 {
+      match transduction_op {
+        TransductionOp::Var(id) => {
+          for (_, output) in idx_sst.final_set_mut() {
+            if let Some(var) = vars.get(id) {
+              output.push(OutputComp::X(V::clone(var)));
+            } else {
+              unreachable!();
+            }
+          }
+        }
+        TransductionOp::Str(s) => {
+          for (_, output) in idx_sst.final_set_mut() {
+            for c in s.chars() {
+              output.push(OutputComp::A(T::from_char(c)));
+            }
+          }
+        }
+        TransductionOp::Replace(id, reg, target) => {
+          let replace = match target {
+            ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(T::from_char(c))).collect(),
+            ReplaceTarget::Var(id) => vec![OutputComp::X(V::clone(vars.get(id).unwrap()))],
+          };
+          let result_var = V::new();
+          *ssts.get_mut(id).unwrap() = Self::merge(
+            ssts.get(id).unwrap().clone(),
+            SstBuilder::replace_reg(reg, replace),
+            &result_var,
+          );
+          for (_, output) in idx_sst.final_set_mut() {
+            output.push(OutputComp::X(V::clone(&result_var)));
+          }
+        }
+        TransductionOp::ReplaceAll(id, reg, target) => {
+          let replace = match target {
+            ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(T::from_char(c))).collect(),
+            ReplaceTarget::Var(id) => vec![OutputComp::X(V::clone(vars.get(id).unwrap()))],
+          };
+          let result_var = V::new();
+          *ssts.get_mut(id).unwrap() = Self::merge(
+            ssts.get(id).unwrap().clone(),
+            SstBuilder::replace_all_reg(reg, replace),
+            &result_var,
+          );
+          for (_, output) in idx_sst.final_set_mut() {
+            output.push(OutputComp::X(V::clone(&result_var)));
+          }
+        }
+        TransductionOp::Reverse(id) => {
+          let result_var = V::new();
+          *ssts.get_mut(id).unwrap() = Self::merge(
+            ssts.get(id).unwrap().clone(),
+            SstBuilder::reverse(),
+            &result_var,
+          );
+          for (_, output) in idx_sst.final_set_mut() {
+            output.push(OutputComp::X(V::clone(&result_var)));
+          }
+        }
+        TransductionOp::UserDef(_) => unimplemented!(),
+      }
+    }
+
+    *self.ssts.get_mut(idx).unwrap() =
+      if let Some(sst) = ssts.into_iter().reduce(|result, sst| result.chain(sst)) {
+        /*
+         * TODO -- consider how to pre-imaging automata and what is the form of input
+         * currently, both the given transduction form and returned sst's output form are awesome
+         */
+        for (_, output) in idx_sst.final_set_mut() {
+          if output.len() != 0 {
+            output.push(OutputComp::A(T::separator()));
+          }
+        }
+
+        sst
+      } else {
+        Self::identity()
+      }
+      .chain(idx_sst)
+  }
+
+  /**
+   * merging two sst.
+   * output function is first one's,
+   * and second one's is into the given result variable.
+   * to say short, create a new sst that is based on first sst,
+   * but have second one's info like transition, variables, output.
+   * the sst will refuse a input if either one sst refuse it.
+   */
+  pub fn merge(sst1: Sst<T, S, V>, sst2: Sst<T, S, V>, result: &V) -> Sst<T, S, V> {
+    let error_msg = "Uncontrolled states exist. this will happen for developper's error";
+
+    let Sst {
+      states: s1,
+      variables: v1,
+      initial_state: i1,
+      output_function: o1,
+      transition: t1,
+    } = sst1;
+
+    let Sst {
+      states: s2,
+      variables: v2,
+      initial_state: i2,
+      output_function: o2,
+      transition: t2,
+    } = sst2;
+
+    let cartesian = s1
+      .iter()
+      .flat_map(|p| {
+        s2.iter()
+          .map(move |q| ((S::clone(p), S::clone(q)), S::new()))
+      })
+      .collect::<HashMap<_, _>>();
+
+    let initial_state = cartesian.get(&(i1, i2)).expect(error_msg).clone();
+
+    let mut variables = v1.into_iter().chain(v2.into_iter()).collect::<HashSet<_>>();
+    variables.insert(V::clone(result));
+
+    let mut output_function = HashMap::new();
+    let mut transition = t1
+      .iter()
+      .flat_map(|((p1, phi1), (q1, u1))| {
+        t2.iter()
+          .map(|((p2, phi2), (q2, u2))| {
+            let p = S::clone(
+              cartesian
+                .get(&(S::clone(p1), S::clone(p2)))
+                .expect(error_msg),
+            );
+            let q = S::clone(
+              cartesian
+                .get(&(S::clone(q1), S::clone(q2)))
+                .expect(error_msg),
+            );
+
+            (
+              (p, phi1.and(phi2)),
+              (
+                q,
+                u1.iter()
+                  .chain(u2.into_iter())
+                  .map(|(v, uc)| (V::clone(&v), uc.clone()))
+                  .collect(),
+              ),
+            )
+          })
+          .collect::<Vec<_>>()
+      })
+      .collect::<HashMap<_, (S, HashMap<V, Vec<UpdateComp<FunctionTermImpl<T>, V>>>)>>();
+
+    for (fs1, o1) in o1.iter() {
+      for (fs2, o2) in o2.iter() {
+        let fs = cartesian
+          .get(&(S::clone(fs1), S::clone(fs2)))
+          .expect(error_msg);
+
+        output_function.insert(S::clone(fs), o1.clone());
+
+        if let Some((_, update)) =
+          transition.get_mut(&(S::clone(fs), Predicate::eq(T::separator())))
+        {
+          update.insert(
+            V::clone(result),
+            o2.into_iter()
+              .map(|out| match out {
+                OutputComp::A(a) => UpdateComp::F(Lambda::constant(T::clone(a))),
+                OutputComp::X(var) => UpdateComp::X(V::clone(var)),
+              })
+              .collect(),
+          );
+        } else {
+          transition.insert(
+            (S::clone(fs), Predicate::eq(T::separator())),
+            (
+              S::clone(fs),
+              HashMap::from([(
+                V::clone(result),
+                o2.into_iter()
+                  .map(|out| match out {
+                    OutputComp::A(a) => UpdateComp::F(Lambda::constant(T::clone(a))),
+                    OutputComp::X(var) => UpdateComp::X(V::clone(var)),
+                  })
+                  .collect(),
+              )]),
+            ),
+          );
+        }
+      }
+    }
+
+    let states = cartesian.into_values().collect();
+
+    Sst::new(
+      states,
+      variables,
+      initial_state,
+      output_function,
+      transition,
+    )
+  }
+
+  fn empty(&mut self, vars: &mut Vec<V>) -> Sst<T, S, V> {
+    let initial_state = S::new();
+    let var = V::new();
+
+    let mut states = HashSet::new();
+    states.insert(S::clone(&initial_state));
+    let mut variables = HashSet::new();
+    variables.insert(V::clone(&var));
+    let mut output_function = HashMap::new();
+    output_function.insert(S::clone(&initial_state), vec![]);
+    let mut transition = HashMap::new();
+    let mut map = HashMap::new();
+    map.insert(
+      V::clone(&var),
+      vec![
+        UpdateComp::X(V::clone(&var)),
+        UpdateComp::F(Lambda::identity()),
+      ],
+    );
+    transition.insert(
+      (S::clone(&initial_state), Predicate::top()),
+      (S::clone(&initial_state), map),
+    );
+
+    vars.push(var);
 
     Sst::new(
       states,
@@ -467,8 +735,7 @@ mod tests {
 
   #[test]
   fn identity() {
-    let test = TestBuilder::blank();
-    let id = test.identity();
+    let id = TestBuilder::identity();
 
     assert_eq!(
       String::from_iter(&id.run(&chars("")[..])[0]),
@@ -486,9 +753,8 @@ mod tests {
 
   #[test]
   fn constant() {
-    let test = TestBuilder::blank();
     let cnst = "this is a constant".to_string();
-    let id = test.constant(&cnst);
+    let id = TestBuilder::constant(&cnst);
 
     assert_eq!(String::from_iter(&id.run(&chars("")[..])[0]), cnst);
     assert_eq!(String::from_iter(&id.run(&chars("xyx")[..])[0]), cnst);
@@ -497,8 +763,7 @@ mod tests {
 
   #[test]
   fn reverse() {
-    let test = TestBuilder::blank();
-    let rev = test.reverse();
+    let rev = TestBuilder::reverse();
 
     assert_eq!(
       String::from_iter(&rev.run(&chars("")[..])[0]),
@@ -517,8 +782,7 @@ mod tests {
   #[test]
   #[should_panic]
   fn reject_empty_substr_all_reg() {
-    let test = TestBuilder::blank();
-    let _rep = test.replace_all_reg(Regex::Empty, vec![]);
+    let _rep = TestBuilder::replace_all_reg(Regex::Empty, vec![]);
 
     eprintln!("unreachable");
   }
@@ -526,16 +790,14 @@ mod tests {
   #[test]
   #[should_panic]
   fn reject_epsilon_substr_all_reg() {
-    let test = TestBuilder::blank();
-    let _rep = test.replace_all_reg(Regex::Epsilon, vec![]);
+    let _rep = TestBuilder::replace_all_reg(Regex::Epsilon, vec![]);
 
     eprintln!("unreachable");
   }
 
   #[test]
   fn abc_to_xyz_all_reg() {
-    let test = TestBuilder::blank();
-    let rep = test.replace_all_reg(
+    let rep = TestBuilder::replace_all_reg(
       Regex::parse("abc").unwrap(),
       "xyz".chars().map(|c| OutputComp::A(c)).collect(),
     );
@@ -564,8 +826,7 @@ mod tests {
 
   #[test]
   fn a_to_many_all_reg() {
-    let test = TestBuilder::blank();
-    let rep = test.replace_all_reg(
+    let rep = TestBuilder::replace_all_reg(
       Regex::parse("a").unwrap(),
       "qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\"
         .chars()
@@ -595,8 +856,7 @@ mod tests {
 
   #[test]
   fn abcxyz_to_1_all_reg() {
-    let test = TestBuilder::blank();
-    let rep = test.replace_all_reg(
+    let rep = TestBuilder::replace_all_reg(
       Regex::parse("abcxyz").unwrap(),
       "1".chars().map(|c| OutputComp::A(c)).collect(),
     );
@@ -622,8 +882,7 @@ mod tests {
   #[test]
   #[should_panic]
   fn reject_empty_substr_reg() {
-    let test = TestBuilder::blank();
-    let _rep = test.replace_reg(Regex::Empty, vec![]);
+    let _rep = TestBuilder::replace_reg(Regex::Empty, vec![]);
 
     eprintln!("unreachable");
   }
@@ -631,16 +890,14 @@ mod tests {
   #[test]
   #[should_panic]
   fn reject_epsilon_substr_reg() {
-    let test = TestBuilder::blank();
-    let _rep = test.replace_reg(Regex::Epsilon, vec![]);
+    let _rep = TestBuilder::replace_reg(Regex::Epsilon, vec![]);
 
     eprintln!("unreachable");
   }
 
   #[test]
   fn abc_to_xyz_reg() {
-    let test = TestBuilder::blank();
-    let rep = test.replace_reg(
+    let rep = TestBuilder::replace_reg(
       Regex::parse("abc").unwrap(),
       "xyz".chars().map(|c| OutputComp::A(c)).collect(),
     );
@@ -669,8 +926,7 @@ mod tests {
 
   #[test]
   fn a_to_many_reg() {
-    let test = TestBuilder::blank();
-    let rep = test.replace_reg(
+    let rep = TestBuilder::replace_reg(
       Regex::parse("a").unwrap(),
       "qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\"
         .chars()
@@ -698,8 +954,7 @@ mod tests {
 
   #[test]
   fn abcxyz_to_1_reg() {
-    let test = TestBuilder::blank();
-    let rep = test.replace_reg(
+    let rep = TestBuilder::replace_reg(
       Regex::parse("abcxyz").unwrap(),
       "1".chars().map(|c| OutputComp::A(c)).collect(),
     );

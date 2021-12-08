@@ -1,3 +1,4 @@
+use crate::char_util::FromChar;
 use crate::transducer::term::{FunctionTerm, Lambda};
 use std::{fmt::Debug, hash::Hash, rc::Rc};
 
@@ -12,7 +13,7 @@ use std::{fmt::Debug, hash::Hash, rc::Rc};
  * not: [not p] -> D \ [p]
  */
 pub trait BoolAlg: Debug + PartialEq + Eq + Hash {
-  type Domain: Debug + PartialEq + Eq + Hash + Clone;
+  type Domain: FromChar;
 
   fn and(self: &Rc<Self>, other: &Rc<Self>) -> Rc<Self>;
   fn or(self: &Rc<Self>, other: &Rc<Self>) -> Rc<Self>;
@@ -30,14 +31,11 @@ pub trait BoolAlg: Debug + PartialEq + Eq + Hash {
  * for Primitive Predicate
  */
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub enum Predicate<T>
-where
-  T: PartialOrd + Ord + Copy + PartialEq + Eq + Hash + Debug,
-{
+pub enum Predicate<T: FromChar> {
   Bool(bool),
   Eq(T),
   Range {
-    //whether satisfying arg left <= arg && arg < right
+    /** whether satisfying arg left <= arg && arg < right */
     left: Option<T>,
     right: Option<T>,
   },
@@ -46,14 +44,11 @@ where
   Or(Rc<Self>, Rc<Self>),
   Not(Rc<Self>),
   WithLambda {
-    p: Rc<Predicate<T>>,
+    p: Rc<Self>,
     f: Rc<Lambda<Self>>,
   },
 }
-impl<T> Predicate<T>
-where
-  T: PartialOrd + Ord + Copy + PartialEq + Eq + Hash + Debug,
-{
+impl<T: FromChar> Predicate<T> {
   pub fn eq(a: T) -> Rc<Self> {
     Rc::new(Predicate::Eq(a))
   }
@@ -64,7 +59,7 @@ where
         if *r < *l {
           Predicate::bot()
         } else if *r == *l {
-          Predicate::eq(*l)
+          Predicate::eq(l.clone())
         } else {
           Rc::new(Predicate::Range { left, right })
         }
@@ -78,7 +73,7 @@ where
     if elements.len() == 0 {
       Predicate::bot()
     } else if elements.len() == 1 {
-      Predicate::eq(elements[0])
+      Predicate::eq(elements[0].clone())
     } else {
       Rc::new(Predicate::InSet(Vec::from(elements)))
     }
@@ -142,7 +137,7 @@ where
               if *ql < *pl {
                 if *qr < *pr {
                   /* ql\__pl\_result_/qr__/pr */
-                  Predicate::range(Some(*pl), Some(*qr))
+                  Predicate::range(Some(pl.clone()), Some(qr.clone()))
                 } else {
                   /* ql\__pl\_result_/pr__qr */
                   Rc::clone(p)
@@ -153,7 +148,7 @@ where
                   Rc::clone(q)
                 } else {
                   /* pl\__ql\_result_/pr__/qr */
-                  Predicate::range(Some(*ql), Some(*pr))
+                  Predicate::range(Some(ql.clone()), Some(pr.clone()))
                 }
               }
             }
@@ -161,14 +156,14 @@ where
               if *pl <= *ql {
                 Rc::clone(q)
               } else {
-                Predicate::range(Some(*pl), Some(*qr))
+                Predicate::range(Some(pl.clone()), Some(qr.clone()))
               }
             }
             (None, Some(pr), Some(ql), Some(qr)) if *ql <= *pr => {
               if *qr <= *pr {
                 Rc::clone(q)
               } else {
-                Predicate::range(Some(*ql), Some(*pr))
+                Predicate::range(Some(ql.clone()), Some(pr.clone()))
               }
             }
             /* q is of the form |_______/qr| */
@@ -176,10 +171,12 @@ where
               if *pr <= *qr {
                 Rc::clone(p)
               } else {
-                Predicate::range(Some(*pl), Some(*qr))
+                Predicate::range(Some(pl.clone()), Some(qr.clone()))
               }
             }
-            (Some(pl), None, None, Some(qr)) => Predicate::range(Some(*pl), Some(*qr)),
+            (Some(pl), None, None, Some(qr)) => {
+              Predicate::range(Some(pl.clone()), Some(qr.clone()))
+            }
             (None, Some(pr), None, Some(qr)) => {
               if *qr <= *pr {
                 Rc::clone(q)
@@ -192,7 +189,7 @@ where
               if *ql <= *pl {
                 Rc::clone(p)
               } else {
-                Predicate::range(Some(*ql), Some(*pr))
+                Predicate::range(Some(ql.clone()), Some(pr.clone()))
               }
             }
             (Some(pl), None, Some(ql), None) => {
@@ -202,7 +199,9 @@ where
                 Rc::clone(p)
               }
             }
-            (None, Some(pr), Some(ql), None) => Predicate::range(Some(*ql), Some(*pr)),
+            (None, Some(pr), Some(ql), None) => {
+              Predicate::range(Some(ql.clone()), Some(pr.clone()))
+            }
             _ => Predicate::bot(),
           }
         }
@@ -282,7 +281,7 @@ where
                   Rc::clone(q)
                 } else {
                   /* ql\__pl\_______/qr__/pr */
-                  Predicate::range(Some(*ql), Some(*pr))
+                  Predicate::range(Some(ql.clone()), Some(pr.clone()))
                 }
               } else {
                 if *qr <= *pr {
@@ -290,7 +289,7 @@ where
                   Rc::clone(p)
                 } else {
                   /* pl\__ql\______/pr__/qr */
-                  Predicate::range(Some(*pl), Some(*qr))
+                  Predicate::range(Some(pl.clone()), Some(qr.clone()))
                 }
               }
             }
@@ -298,14 +297,14 @@ where
               if *pl <= *ql {
                 Rc::clone(p)
               } else {
-                Predicate::range(Some(*ql), None)
+                Predicate::range(Some(ql.clone()), None)
               }
             }
             (None, Some(pr), Some(ql), Some(qr)) if *ql <= *pr => {
               if *qr <= *pr {
                 Rc::clone(p)
               } else {
-                Predicate::range(None, Some(*qr))
+                Predicate::range(None, Some(qr.clone()))
               }
             }
             /* q is of the form |_______/qr| */
@@ -313,7 +312,7 @@ where
               if *pr <= *qr {
                 Rc::clone(q)
               } else {
-                Predicate::range(None, Some(*pr))
+                Predicate::range(None, Some(pr.clone()))
               }
             }
             (Some(pl), None, None, Some(qr)) if *pl <= *qr => Predicate::top(),
@@ -329,7 +328,7 @@ where
               if *ql <= *pl {
                 Rc::clone(q)
               } else {
-                Predicate::range(Some(*pl), None)
+                Predicate::range(Some(pl.clone()), None)
               }
             }
             (Some(pl), None, Some(ql), None) => {
@@ -375,10 +374,7 @@ where
     }
   }
 }
-impl<T> BoolAlg for Predicate<T>
-where
-  T: PartialOrd + Ord + Copy + PartialEq + Eq + Hash + Debug,
-{
+impl<T: FromChar> BoolAlg for Predicate<T> {
   type Domain = T;
 
   /**
@@ -407,7 +403,7 @@ where
 
   fn denotate(&self, arg: &Self::Domain) -> bool {
     match self {
-      Predicate::Bool(b) => *b,
+      Predicate::Bool(b) => *b && *arg != Self::Domain::separator(),
       Predicate::Eq(a) => *a == *arg,
       Predicate::Range { left, right } => {
         return match left {

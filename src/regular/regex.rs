@@ -9,7 +9,6 @@ use smt2parser::concrete::{Constant, Term};
 use std::{
   collections::{HashMap, HashSet},
   fmt::Debug,
-  hash::Hash,
 };
 
 //Errors
@@ -38,10 +37,7 @@ pub enum Regex<T: PartialOrd> {
   Star(Box<Regex<T>>),
   Not(Box<Regex<T>>),
 }
-impl<T> Regex<T>
-where
-  T: PartialOrd + Ord + Copy + PartialEq + Eq + Hash + Debug,
-{
+impl<T: FromChar> Regex<T> {
   pub fn concat(self, other: Regex<T>) -> Self {
     Regex::Concat(Box::new(self), Box::new(other))
   }
@@ -121,7 +117,7 @@ where
     }
   }
 
-  //with, thompson  --- clushkul, partial derivative
+  /** with, thompson  --- clushkul, partial derivative */
   pub fn to_sym_fa<S: StateImpl>(self) -> Sfa<Predicate<T>, S> {
     match self {
       Regex::Empty => {
@@ -209,8 +205,7 @@ where
       Regex::Star(r) => r.to_sym_fa().star(),
     }
   }
-}
-impl<T: FromChar> Regex<T> {
+
   pub fn new(term: &Term) -> Self {
     match term {
       Term::Application {
