@@ -1,6 +1,6 @@
 use crate::char_util::FromChar;
 use crate::regular::regex::Regex;
-use crate::state::StateImpl;
+use crate::state::State;
 use crate::transducer::transducer::Transducer;
 use smt2parser::{
   concrete::{Command, Constant, Identifier, QualIdentifier, Sort, Symbol, SyntaxBuilder, Term},
@@ -55,7 +55,7 @@ impl ReplaceTarget {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum TransductionOp<T: FromChar, S: StateImpl> {
+pub enum TransductionOp<T: FromChar, S: State> {
   Var(VarIndex),
   Reverse(VarIndex),
   Str(String),
@@ -66,8 +66,8 @@ pub enum TransductionOp<T: FromChar, S: StateImpl> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Transduction<T: FromChar, S: StateImpl>(pub Vec<TransductionOp<T, S>>);
-impl<T: FromChar, S: StateImpl> Transduction<T, S> {
+pub struct Transduction<T: FromChar, S: State>(pub Vec<TransductionOp<T, S>>);
+impl<T: FromChar, S: State> Transduction<T, S> {
   pub fn empty() -> Self {
     Self(vec![])
   }
@@ -138,7 +138,7 @@ impl<T: FromChar, S: StateImpl> Transduction<T, S> {
 type VarIndex = usize;
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct StraightLineConstraint<T: FromChar, S: StateImpl>(
+pub struct StraightLineConstraint<T: FromChar, S: State>(
   pub(crate) VarIndex,
   pub(crate) Transduction<T, S>,
 );
@@ -148,7 +148,7 @@ pub struct RegularConstraint<T: FromChar>(pub(crate) VarIndex, pub(crate) Regex<
 pub struct IntLinearConstraint(pub(crate) VarIndex, pub(crate) Vec<LinearTerm>);
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Constraint<T: FromChar, S: StateImpl> {
+pub enum Constraint<T: FromChar, S: State> {
   STLine(StraightLineConstraint<T, S>),
   Reg(RegularConstraint<T>),
   #[allow(dead_code)]
@@ -156,8 +156,8 @@ pub enum Constraint<T: FromChar, S: StateImpl> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Constraints<T: FromChar, S: StateImpl>(Vec<Constraint<T, S>>);
-impl<T: FromChar, S: StateImpl> Constraints<T, S> {
+pub struct Constraints<T: FromChar, S: State>(Vec<Constraint<T, S>>);
+impl<T: FromChar, S: State> Constraints<T, S> {
   pub fn new(constraints: Vec<Constraint<T, S>>) -> Self {
     Constraints(constraints)
   }
@@ -220,7 +220,7 @@ impl<T: FromChar, S: StateImpl> Constraints<T, S> {
     self.0.iter()
   }
 }
-impl<T: FromChar, S: StateImpl> FromIterator<Constraint<T, S>> for Constraints<T, S> {
+impl<T: FromChar, S: State> FromIterator<Constraint<T, S>> for Constraints<T, S> {
   fn from_iter<It: IntoIterator<Item = Constraint<T, S>>>(iter: It) -> Self {
     let mut constraints = Constraints::new(vec![]);
 
@@ -231,7 +231,7 @@ impl<T: FromChar, S: StateImpl> FromIterator<Constraint<T, S>> for Constraints<T
     constraints
   }
 }
-impl<T: FromChar, S: StateImpl> IntoIterator for Constraints<T, S> {
+impl<T: FromChar, S: State> IntoIterator for Constraints<T, S> {
   type Item = Constraint<T, S>;
   type IntoIter = std::vec::IntoIter<Self::Item>;
 
@@ -274,13 +274,13 @@ impl Debug for Logic {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Smt2<T: FromChar, S: StateImpl> {
+pub struct Smt2<T: FromChar, S: State> {
   constraints: Constraints<T, S>,
   vars: Variables,
   int_vars: Variables,
   option: SMTOption,
 }
-impl<T: FromChar, S: StateImpl> Smt2<T, S> {
+impl<T: FromChar, S: State> Smt2<T, S> {
   pub fn parse(input: &str) -> Result<Self, String> {
     let commands = CommandStream::new(input.as_bytes(), SyntaxBuilder, None)
       .collect::<Result<Vec<_>, _>>()
@@ -459,7 +459,7 @@ impl<T: FromChar, S: StateImpl> Smt2<T, S> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::state::State;
+  use crate::tests::helper::*;
   use std::rc::Rc;
 
   #[test]
@@ -475,7 +475,7 @@ mod tests {
     (assert (str.in.re x2 (re.* (str.to.re "aa"))))
     (check-sat)
     "#;
-    let smt2 = Smt2::<char, Rc<State>>::parse(input).unwrap();
+    let smt2 = Smt2::<char, Rc<StateImpl>>::parse(input).unwrap();
     assert_eq!(
       &vec!["x0".to_string(), "x1".to_string(), "x2".to_string()],
       smt2.vars(),

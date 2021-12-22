@@ -1,6 +1,10 @@
 use super::recognizable::Recognizable;
-use crate::boolean_algebra::BoolAlg;
-use crate::state::{StateImpl, StateMachine};
+use crate::boolean_algebra::{BoolAlg, Predicate};
+use crate::state::{State, StateMachine};
+use crate::transducer::{
+  sst::SymSST,
+  term::{OutputComp, UpdateComp, Variable},
+};
 use std::{
   collections::{HashMap, HashSet},
   fmt::Debug,
@@ -9,13 +13,12 @@ use std::{
 
 /** symbolic automata
  * each operation like concat, or, ... corresponds to regex's one.
- *
  */
 #[derive(Debug, PartialEq, Clone)]
 pub struct SymFA<B, S>
 where
   B: BoolAlg,
-  S: StateImpl,
+  S: State,
 {
   pub states: HashSet<S>,
   pub initial_state: S,
@@ -25,7 +28,7 @@ where
 impl<B, S> SymFA<B, S>
 where
   B: BoolAlg,
-  S: StateImpl,
+  S: State,
 {
   pub fn new(
     states: HashSet<S>,
@@ -33,6 +36,22 @@ where
     final_states: HashSet<S>,
     transition: HashMap<(S, Rc<B>), S>,
   ) -> Self {
+    let mut transition_: HashMap<(S, S), Rc<B>> = HashMap::new();
+
+    for ((p1, phi), p2) in transition {
+      let tuple = (p1, p2);
+      if let Some(phi_) = transition_.get_mut(&tuple) {
+        *phi_ = phi_.or(&phi);
+      } else {
+        transition_.insert(tuple, phi);
+      }
+    }
+
+    let transition = transition_
+      .into_iter()
+      .map(|((p1, p2), phi)| ((p1, phi), p2))
+      .collect();
+
     SymFA {
       states,
       initial_state,
@@ -47,7 +66,7 @@ where
       .transition
       .iter()
       .filter_map(|((p, phi), _)| if *p == *q { Some(phi) } else { None })
-      .fold(B::bot(), |phi, psi| B::or(&phi, psi))
+      .fold(B::bot(), |phi, psi| phi.or(psi))
   }
 
   pub fn concat(self, other: SymFA<B, S>) -> Self {
@@ -55,8 +74,9 @@ where
       states: s1,
       initial_state,
       final_states: f1,
-      transition: t1,
+      mut transition,
     } = self;
+
     let SymFA {
       states: s2,
       initial_state: i2,
@@ -64,27 +84,22 @@ where
       transition: t2,
     } = other;
 
-    let states = s1.into_iter().chain(s2.into_iter()).collect::<HashSet<_>>();
+    let states = s1.union(&s2).cloned().collect();
+
+    for ((state2, phi2), next2) in t2.into_iter() {
+      if state2 == i2 {
+        for final_state in f1.iter() {
+          transition.insert((S::clone(&final_state), Rc::clone(&phi2)), S::clone(&next2));
+        }
+      }
+      transition.insert((state2, phi2), next2);
+    }
+
     let final_states = if f2.contains(&i2) {
-      f2.into_iter()
-        .chain(f1.iter().map(|final_state| final_state.clone()))
-        .collect()
+      f2.union(&f1).cloned().collect()
     } else {
       f2
     };
-    let transition = t1
-      .into_iter()
-      .chain(t2.into_iter().flat_map(|((state2, phi2), next2)| {
-        if state2 == i2 {
-          f1.iter()
-            .map(|final_state| ((final_state.clone(), Rc::clone(&phi2)), next2.clone()))
-            .chain(vec![((state2.clone(), Rc::clone(&phi2)), next2.clone())])
-            .collect()
-        } else {
-          vec![((state2, phi2), next2)]
-        }
-      }))
-      .collect::<HashMap<_, _>>();
 
     SymFA::new(states, initial_state, final_states, transition)
   }
@@ -105,35 +120,27 @@ where
     } = other;
 
     let initial_state = S::new();
-    let states = s1
-      .into_iter()
-      .chain(s2.into_iter())
-      .chain(vec![initial_state.clone()])
-      .collect::<HashSet<_>>();
-    let final_states = f1.into_iter().chain(f2.into_iter()).collect::<HashSet<_>>();
-    let transition = t1
-      .into_iter()
-      .flat_map(|((state, phi), next)| {
-        if state == i1 {
-          vec![
-            ((initial_state.clone(), Rc::clone(&phi)), next.clone()),
-            ((state, phi), next),
-          ]
-        } else {
-          vec![((state, phi), next)]
-        }
-      })
-      .chain(t2.into_iter().flat_map(|((state, phi), next)| {
-        if state == i2 {
-          vec![
-            ((initial_state.clone(), Rc::clone(&phi)), next.clone()),
-            ((state, phi), next),
-          ]
-        } else {
-          vec![((state, phi), next)]
-        }
-      }))
-      .collect::<HashMap<_, _>>();
+    let mut states: HashSet<_> = s1.union(&s2).cloned().collect();
+    states.insert(S::clone(&initial_state));
+    let final_states: HashSet<_> = f1.union(&f2).cloned().collect();
+
+    let mut transition = HashMap::new();
+
+    for ((state, phi), next) in t1.into_iter() {
+      if state == i1 {
+        transition.insert((S::clone(&initial_state), Rc::clone(&phi)), S::clone(&next));
+      }
+
+      transition.insert((state, phi), next);
+    }
+
+    for ((state, phi), next) in t2.into_iter() {
+      if state == i2 {
+        transition.insert((S::clone(&initial_state), Rc::clone(&phi)), S::clone(&next));
+      }
+
+      transition.insert((state, phi), next);
+    }
 
     SymFA::new(states, initial_state, final_states, transition)
   }
@@ -156,53 +163,59 @@ where
     } = other;
 
     let cartesian = s1
-      .iter()
-      .flat_map(|p| s2.iter().map(move |q| ((p.clone(), q.clone()), S::new())))
+      .into_iter()
+      .flat_map(|p| {
+        s2.iter()
+          .map(move |q| ((S::clone(&p), S::clone(q)), S::new()))
+      })
       .collect::<HashMap<_, _>>();
 
     let final_states = cartesian
       .iter()
       .filter_map(|((p, q), s)| {
         if f1.contains(p) && f2.contains(q) {
-          Some(s.clone())
+          Some(S::clone(s))
         } else {
           None
         }
       })
-      .collect::<HashSet<_>>();
+      .collect();
 
-    let transition = t1
-      .iter()
-      .flat_map(|((p1, phi1), q1)| {
-        t2.iter()
-          .map(|((p2, phi2), q2)| {
-            let p = cartesian
-              .get(&(p1.clone(), p2.clone()))
-              .expect(error_msg)
-              .clone();
-            let q = cartesian
-              .get(&(q1.clone(), q2.clone()))
-              .expect(error_msg)
-              .clone();
+    let mut transition = HashMap::new();
 
-            ((p, phi1.and(phi2)), q)
-          })
-          .collect::<Vec<_>>()
-      })
-      .collect::<HashMap<_, _>>();
+    for ((p1, phi1), q1) in &t1 {
+      for ((p2, phi2), q2) in &t2 {
+        let p = S::clone(
+          cartesian
+            .get(&(S::clone(p1), S::clone(p2)))
+            .expect(error_msg),
+        );
+        let q = S::clone(
+          cartesian
+            .get(&(S::clone(q1), S::clone(q2)))
+            .expect(error_msg),
+        );
+
+        transition.insert((p, phi1.and(phi2)), q);
+      }
+    }
 
     let initial_state = cartesian.get(&(i1, i2)).expect(error_msg).clone();
 
-    let states = cartesian.into_values().collect::<HashSet<_>>();
+    let states = cartesian.into_values().collect();
+
+    eprintln!("before t: {:?}", transition);
+    eprintln!("before i: {:?}", initial_state);
+    eprintln!("before f: {:?}", final_states);
 
     SymFA::new(states, initial_state, final_states, transition)
   }
 
   pub fn not(self) -> Self {
-    let states_ = self.states().clone();
-    let not_predicates = states_
+    let not_predicates = self
+      .states()
       .iter()
-      .map(|state| (state, self.state_predicate(state).not()))
+      .map(|state| (S::clone(state), self.state_predicate(state).not()))
       .collect::<HashMap<_, _>>();
 
     let SymFA {
@@ -214,19 +227,19 @@ where
 
     let mut final_states = &states - &final_states;
     let fail_state = S::new();
-    transition = transition
-      .into_iter()
-      .chain(states.iter().map(|state| {
+
+    for state in &states {
+      transition.insert(
         (
-          (
-            state.clone(),
-            Rc::clone(not_predicates.get(state).unwrap_or(&B::bot())),
-          ),
-          fail_state.clone(),
-        )
-      }))
-      .collect();
-    states.insert(fail_state.clone());
+          S::clone(state),
+          Rc::clone(not_predicates.get(state).unwrap()),
+        ),
+        S::clone(&fail_state),
+      );
+    }
+    transition.insert((S::clone(&fail_state), B::top()), S::clone(&fail_state));
+
+    states.insert(S::clone(&fail_state));
     final_states.insert(fail_state);
 
     SymFA::new(states, initial_state, final_states, transition)
@@ -242,27 +255,185 @@ where
 
     let initial_state = S::new();
 
-    states.insert(initial_state.clone());
+    states.insert(S::clone(&initial_state));
 
-    final_states.insert(initial_state.clone());
+    final_states.insert(S::clone(&initial_state));
 
-    let transition = t
-      .into_iter()
-      .flat_map(|((state, phi), next)| {
-        if state == i {
-          final_states
-            .iter()
-            .map(|final_state| ((final_state.clone(), Rc::clone(&phi)), next.clone()))
-            .chain(vec![
-              ((state, Rc::clone(&phi)), next.clone()),
-              ((initial_state.clone(), Rc::clone(&phi)), next.clone()),
-            ])
-            .collect()
-        } else {
-          vec![((state, phi), next)]
+    let mut transition = HashMap::new();
+
+    for ((state, phi), next) in t.into_iter() {
+      if state == i {
+        for final_state in final_states.iter() {
+          transition.insert((S::clone(final_state), Rc::clone(&phi)), S::clone(&next));
         }
-      })
-      .collect();
+        transition.insert((state, Rc::clone(&phi)), S::clone(&next));
+        transition.insert((S::clone(&initial_state), Rc::clone(&phi)), next);
+      } else {
+        transition.insert((state, phi), next);
+      }
+    }
+
+    SymFA::new(states, initial_state, final_states, transition)
+  }
+
+  pub fn pre_image<V: Variable>(self, sst: SymSST<B::Term, S, V>) -> Self {
+    let mut states = HashMap::new();
+    let mut initial_states: HashSet<S> = HashSet::new();
+    let mut transition = HashMap::new();
+    let mut final_states = HashSet::new();
+
+    let mut stack = vec![];
+
+    for (q, output) in sst.final_set() {
+      let mut possibilities = vec![(S::clone(self.initial_state()), HashMap::new())];
+      for oc in output {
+        match oc {
+          OutputComp::A(a) => {
+            possibilities = self.step(possibilities, |(curr, var_map)| {
+              move |((p1, phi), p2)| {
+                if *p1 == curr && phi.denotate(a) {
+                  Some((S::clone(p2), var_map.clone()))
+                } else {
+                  None
+                }
+              }
+            });
+          }
+          OutputComp::X(x) => {
+            possibilities = possibilities
+              .into_iter()
+              .flat_map(|(curr, var_map)| {
+                if let Some(next) = var_map.get(&(S::clone(&curr), V::clone(x))) {
+                  vec![(S::clone(next), var_map)]
+                } else {
+                  self
+                    .states
+                    .iter()
+                    .map(|next| {
+                      let mut var_map = var_map.clone();
+                      var_map.insert((S::clone(&curr), V::clone(&x)), S::clone(next));
+                      (S::clone(next), var_map)
+                    })
+                    .collect()
+                }
+              })
+              .collect()
+          }
+        }
+      }
+
+      for (p, var_map) in possibilities {
+        if self.final_states.contains(&p) {
+          let tuple = (q, var_map.into_iter().collect::<Vec<_>>());
+          stack.push(tuple.clone());
+          states.entry(tuple).or_insert({
+            let new_state = S::new();
+            final_states.insert(S::clone(&new_state));
+            new_state
+          });
+        }
+      }
+    }
+
+    while let Some(tuple) = stack.pop() {
+      let target = S::clone(states.get(&tuple).unwrap());
+      let (q, var_map) = tuple;
+
+      let mut is_initial = true;
+
+      for ((p1, var), p2) in &var_map {
+        is_initial = is_initial && p1 == p2;
+
+        for ((q1, psi), (q2, alpha)) in sst.transition() {
+          if q2 != q {
+            continue;
+          } else {
+            let mut possibilities = vec![(S::clone(p1), B::top(), HashMap::new())];
+
+            for uc in alpha
+              .get(var)
+              .unwrap_or(&vec![UpdateComp::X(V::clone(var))])
+              .into_iter()
+            {
+              match uc {
+                UpdateComp::F(lambda) => {
+                  possibilities = self.step(possibilities, |(curr, var_phi, var_map)| {
+                    move |((r1, phi), r2)| {
+                      if *r1 == curr {
+                        Some((
+                          S::clone(r2),
+                          var_phi.and(&Rc::clone(phi).with_lambda(lambda.clone())),
+                          var_map.clone(),
+                        ))
+                      } else {
+                        None
+                      }
+                    }
+                  });
+                }
+                UpdateComp::X(x) => {
+                  possibilities = possibilities
+                    .into_iter()
+                    .flat_map(|(r, phi, var_map)| {
+                      if let Some(next) = var_map.get(&(S::clone(&r), V::clone(x))) {
+                        vec![(S::clone(next), phi, var_map)]
+                      } else {
+                        self
+                          .states
+                          .iter()
+                          .map(|next| {
+                            let mut new_var_map = var_map.clone();
+                            new_var_map.insert((S::clone(&r), V::clone(&x)), S::clone(next));
+                            (S::clone(next), Rc::clone(&phi), new_var_map)
+                          })
+                          .collect()
+                      }
+                    })
+                    .collect()
+                }
+              }
+            }
+
+            for (p, phi, var_map) in possibilities {
+              if p == *p2 {
+                let tuple = (q1, var_map.into_iter().collect());
+                let source_state = match states.get(&tuple) {
+                  Some(s) => S::clone(s),
+                  None => {
+                    let new_state = S::new();
+                    stack.push(tuple.clone());
+                    states.insert(tuple, S::clone(&new_state));
+                    new_state
+                  }
+                };
+                let source = (source_state, psi.and(&phi));
+                transition.insert(source, S::clone(&target));
+              }
+            }
+          }
+        }
+      }
+
+      if is_initial {
+        initial_states.insert(target);
+      }
+    }
+
+    let mut states: HashSet<_> = states.into_values().collect();
+    let initial_state = S::new();
+
+    states.insert(S::clone(&initial_state));
+
+    let transition_ = transition;
+    let mut transition = HashMap::new();
+
+    for ((s1, phi), s2) in transition_.into_iter() {
+      if initial_states.contains(&s1) {
+        transition.insert((S::clone(&initial_state), Rc::clone(&phi)), S::clone(&s2));
+      }
+
+      transition.insert((S::clone(&s1), Rc::clone(&phi)), S::clone(&s2));
+    }
 
     SymFA::new(states, initial_state, final_states, transition)
   }
@@ -270,39 +441,34 @@ where
 impl<B, S> Recognizable<B::Domain> for SymFA<B, S>
 where
   B: BoolAlg,
-  S: StateImpl,
+  S: State,
 {
   fn member(&self, input: &[B::Domain]) -> bool {
-    let mut current_states = HashSet::new();
-    current_states.insert(self.initial_state.clone());
+    let mut possibilities = vec![self.initial_state.clone()];
 
-    for a in input {
+    for c in input {
       //eprintln!("char {:?}, states {:?}", a, current_states);
-      current_states = current_states
-        .into_iter()
-        .flat_map(|current_state| {
-          self
-            .transition
-            .iter()
-            .filter_map(|((state, phi), next)| {
-              if *state == current_state && phi.denotate(a) {
-                Some(next.clone())
-              } else {
-                None
-              }
-            })
-            .collect::<HashSet<_>>()
-        })
-        .collect::<HashSet<_>>();
+      possibilities = self.step(possibilities, |current_state| {
+        move |((state, phi), next)| {
+          if *state == current_state && phi.denotate(c) {
+            Some(next.clone())
+          } else {
+            None
+          }
+        }
+      });
     }
 
-    !&current_states.is_disjoint(&self.final_states)
+    !&possibilities
+      .into_iter()
+      .collect::<HashSet<_>>()
+      .is_disjoint(&self.final_states)
   }
 }
 impl<B, S> StateMachine for SymFA<B, S>
 where
   B: BoolAlg,
-  S: StateImpl,
+  S: State,
 {
   type StateType = S;
 
@@ -365,13 +531,12 @@ where
   }
 }
 
-pub type Sfa<B, S> = SymFA<B, S>;
+pub type Sfa<T, S> = SymFA<Predicate<T>, S>;
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::boolean_algebra::Predicate;
-  use crate::state::State;
+  use crate::{boolean_algebra::Predicate, tests::helper::*};
 
   #[test]
   fn create_sfa_and_test_minimize() {
@@ -379,37 +544,31 @@ mod tests {
     let mut final_states = HashSet::new();
     let mut transition = HashMap::new();
 
-    let initial_state = Rc::new(State::new());
-    states.insert(Rc::clone(&initial_state));
+    let initial_state = StateImpl::new();
+    states.insert(initial_state.clone());
 
-    let rebundon_state = Rc::new(State::new());
-    states.insert(Rc::clone(&rebundon_state));
+    let rebundon_state = StateImpl::new();
+    states.insert(rebundon_state.clone());
 
-    let final_state = Rc::new(State::new());
-    states.insert(Rc::clone(&final_state));
-    final_states.insert(Rc::clone(&final_state));
+    let final_state = StateImpl::new();
+    states.insert(final_state.clone());
+    final_states.insert(final_state.clone());
 
     let abc = Predicate::range(Some('a'), Some('d'));
     let not_abc = Predicate::not(&abc);
     transition.insert(
-      (Rc::clone(&initial_state), Rc::clone(&abc)),
-      Rc::clone(&final_state),
+      (initial_state.clone(), Rc::clone(&abc)),
+      final_state.clone(),
     );
     transition.insert(
-      (Rc::clone(&initial_state), Rc::clone(&not_abc)),
-      Rc::clone(&initial_state),
+      (initial_state.clone(), Rc::clone(&not_abc)),
+      initial_state.clone(),
     );
 
     let w = Predicate::eq('w');
     let not_w = Predicate::not(&w);
-    transition.insert(
-      (Rc::clone(&final_state), w.clone()),
-      Rc::clone(&initial_state),
-    );
-    transition.insert(
-      (Rc::clone(&final_state), not_w.clone()),
-      Rc::clone(&final_state),
-    );
+    transition.insert((final_state.clone(), w.clone()), initial_state.clone());
+    transition.insert((final_state.clone(), not_w.clone()), final_state.clone());
 
     let sym_fa = SymFA::new(
       states.clone(),
@@ -419,24 +578,24 @@ mod tests {
     );
     println!("{:#?}", sym_fa);
     assert_eq!(sym_fa.states.len(), 2);
-    assert!(sym_fa.member(&"afvfdl".chars().collect::<Vec<char>>()[..]));
-    assert!(!sym_fa.member(&"".chars().collect::<Vec<char>>()[..]));
-    assert!(sym_fa.member(&"awa".chars().collect::<Vec<char>>()[..]));
-    assert!(sym_fa.member(&"cwbwad".chars().collect::<Vec<char>>()[..]));
-    assert!(!sym_fa.member(&"cwbwadww".chars().collect::<Vec<char>>()[..]));
+    assert!(sym_fa.member(&chars("afvfdl")));
+    assert!(!sym_fa.member(&chars("")));
+    assert!(sym_fa.member(&chars("awa")));
+    assert!(sym_fa.member(&chars("cwbwad")));
+    assert!(!sym_fa.member(&chars("cwbwadww")));
 
     let sym_fa = SymFA {
       states,
       initial_state,
       final_states,
-      transition: transition,
+      transition,
     };
     println!("{:#?}", sym_fa);
     assert_eq!(sym_fa.states.len(), 3);
-    assert!(sym_fa.member(&"afvfdl".chars().collect::<Vec<char>>()[..]));
-    assert!(!sym_fa.member(&"".chars().collect::<Vec<char>>()[..]));
-    assert!(sym_fa.member(&"awa".chars().collect::<Vec<char>>()[..]));
-    assert!(sym_fa.member(&"cwbwad".chars().collect::<Vec<char>>()[..]));
-    assert!(!sym_fa.member(&"cwbwadww".chars().collect::<Vec<char>>()[..]));
+    assert!(sym_fa.member(&chars("afvfdl")));
+    assert!(!sym_fa.member(&chars("")));
+    assert!(sym_fa.member(&chars("awa")));
+    assert!(sym_fa.member(&chars("cwbwad")));
+    assert!(!sym_fa.member(&chars("cwbwadww")));
   }
 }

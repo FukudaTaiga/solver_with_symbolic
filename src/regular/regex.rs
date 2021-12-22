@@ -3,7 +3,7 @@ use crate::{
   boolean_algebra::{BoolAlg, Predicate},
   char_util::FromChar,
   smt2,
-  state::StateImpl,
+  state::State,
 };
 use smt2parser::concrete::{Constant, Term};
 use std::{
@@ -38,6 +38,33 @@ pub enum Regex<T: PartialOrd> {
   Not(Box<Regex<T>>),
 }
 impl<T: FromChar> Regex<T> {
+  pub fn empty() -> Self {
+    Regex::Empty
+  }
+
+  pub fn epsilon() -> Self {
+    Regex::Epsilon
+  }
+
+  pub fn all() -> Self {
+    Regex::All
+  }
+
+  pub fn element(c: char) -> Self {
+    Regex::Element(T::from_char(c))
+  }
+
+  pub fn seq(s: &str) -> Self {
+    s.chars()
+      .map(|c| Regex::Element(T::from_char(c)))
+      .reduce(|reg, el| reg.concat(el))
+      .unwrap_or(Regex::Epsilon)
+  }
+
+  pub fn range(start: Option<char>, end: Option<char>) -> Self {
+    Regex::Range(start.map(|c| T::from_char(c)), end.map(|c| T::from_char(c)))
+  }
+
   pub fn concat(self, other: Regex<T>) -> Self {
     Regex::Concat(Box::new(self), Box::new(other))
   }
@@ -54,12 +81,12 @@ impl<T: FromChar> Regex<T> {
     Regex::Star(Box::new(self))
   }
 
-  pub fn not(self) -> Self {
-    Regex::Not(Box::new(self))
+  pub fn plus(self) -> Self {
+    self.clone().concat(self.star())
   }
 
-  pub fn range(start: Option<T>, end: Option<T>) -> Self {
-    Regex::Range(start, end)
+  pub fn not(self) -> Self {
+    Regex::Not(Box::new(self))
   }
 
   /**
@@ -118,7 +145,7 @@ impl<T: FromChar> Regex<T> {
   }
 
   /** with, thompson  --- clushkul, partial derivative */
-  pub fn to_sym_fa<S: StateImpl>(self) -> Sfa<Predicate<T>, S> {
+  pub fn to_sym_fa<S: State>(self) -> Sfa<T, S> {
     match self {
       Regex::Empty => {
         let initial_state = S::new();
@@ -255,9 +282,7 @@ impl<T: FromChar> Regex<T> {
           if let [start, end] = &arguments[..] {
             if let Term::Constant(Constant::String(start)) = start {
               if let Term::Constant(Constant::String(end)) = end {
-                let start = start.chars().next().map(|c| T::from_char(c));
-                let end = end.chars().next().map(|c| T::from_char(c));
-                Regex::range(start, end)
+                Regex::range(start.chars().next(), end.chars().next())
               } else {
                 panic!("Syntax Error")
               }
@@ -352,21 +377,6 @@ impl Regex<char> {
     }
 
     Ok(result.reduce())
-  }
-
-  pub fn convert<U: FromChar>(self) -> Regex<U> {
-    match self {
-      Regex::Empty => Regex::Empty,
-      Regex::Epsilon => Regex::Epsilon,
-      Regex::All => Regex::All,
-      Regex::Element(c) => Regex::Element(U::from_char(c)),
-      Regex::Range(l, r) => Regex::range(l.map(|c| U::from_char(c)), r.map(|c| U::from_char(c))),
-      Regex::Or(r1, r2) => Regex::Or(Box::new(r1.convert()), Box::new(r2.convert())),
-      Regex::Inter(r1, r2) => Regex::Inter(Box::new(r1.convert()), Box::new(r2.convert())),
-      Regex::Concat(r1, r2) => Regex::Concat(Box::new(r1.convert()), Box::new(r2.convert())),
-      Regex::Not(r) => Regex::Not(Box::new(r.convert())),
-      Regex::Star(r) => Regex::Star(Box::new(r.convert())),
-    }
   }
 }
 impl Recognizable<char> for Regex<char> {

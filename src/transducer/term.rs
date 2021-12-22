@@ -1,7 +1,12 @@
 use crate::boolean_algebra::{BoolAlg, Predicate};
-use std::{borrow::Borrow, fmt::Debug, hash::Hash, rc::Rc};
+use std::{
+  fmt::Debug,
+  hash::Hash,
+  rc::Rc,
+  sync::atomic::{AtomicUsize, Ordering},
+};
 
-pub trait FunctionTerm: Debug + PartialEq + Eq + Hash {
+pub trait FunctionTerm: Debug + PartialEq + Eq + Hash + Clone {
   type Underlying: BoolAlg;
 
   fn apply<'a>(
@@ -9,7 +14,7 @@ pub trait FunctionTerm: Debug + PartialEq + Eq + Hash {
     arg: &'a <Self::Underlying as BoolAlg>::Domain,
   ) -> &'a <Self::Underlying as BoolAlg>::Domain;
 
-  fn compose(self: &Rc<Self>, other: &Rc<Self>) -> Rc<Self>;
+  fn compose(self, other: Self) -> Self;
 
   fn identity() -> Self;
 }
@@ -18,7 +23,7 @@ pub trait FunctionTerm: Debug + PartialEq + Eq + Hash {
  * for Primitive Function Term
  */
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub enum Lambda<T: BoolAlg> {
+pub enum Lambda<T: BoolAlg + ?Sized> {
   Id,
   Constant(T::Domain),
   Mapping(Vec<(T::Domain, T::Domain)>),
@@ -58,23 +63,23 @@ where
     }
   }
 
-  fn compose(self: &Rc<Self>, other: &Rc<Self>) -> Rc<Self> {
-    match (self.borrow(), other.borrow()) {
-      (Lambda::Id, _) => Rc::clone(other),
-      (_, Lambda::Id) => Rc::clone(self),
-      (_, Lambda::Constant(_)) => Rc::clone(other),
-      (Lambda::Constant(c), g) => Rc::new(Lambda::Constant(g.apply(&c).clone())),
-      (Lambda::Mapping(map), g) => Rc::new(Lambda::Mapping(
+  fn compose(self, other: Self) -> Self {
+    match (&self, &other) {
+      (Lambda::Id, _) => other,
+      (_, Lambda::Id) => self,
+      (_, Lambda::Constant(_)) => other,
+      (Lambda::Constant(c), g) => Lambda::Constant(g.apply(c).clone()),
+      (Lambda::Mapping(map), g) => Lambda::Mapping(
         map
           .into_iter()
           .map(|(k, v)| (k.clone(), g.apply(v).clone()))
           .collect(),
-      )),
-      (Lambda::Function(f), g) => Rc::new(Lambda::Function(
+      ),
+      (Lambda::Function(f), g) => Lambda::Function(
         f.into_iter()
           .map(|(phi, v)| (Rc::clone(phi), g.apply(v).clone()))
           .collect(),
-      )),
+      ),
     }
   }
 
@@ -83,57 +88,106 @@ where
   }
 }
 
-static mut INTERNAL: usize = 0;
-fn inc() -> usize {
-  unsafe {
-    INTERNAL += 1;
-    INTERNAL
+static VAR_CNT: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct VariableImpl(usize);
+impl VariableImpl {
+  pub fn new() -> VariableImpl {
+    VariableImpl(VAR_CNT.fetch_add(1, Ordering::SeqCst))
   }
 }
 
-#[derive(Debug, Eq, Hash)]
-pub struct Variable(usize);
-impl Variable {
-  pub fn new() -> Variable {
-    Variable(inc())
-  }
-}
-impl Clone for Variable {
-  fn clone(&self) -> Self {
-    Variable(self.0)
-  }
-}
-impl PartialEq for Variable {
-  fn eq(&self, other: &Self) -> bool {
-    //std::ptr::eq(self, other)
-    self.0 == other.0
-  }
-}
-
-pub trait VariableImpl: Debug + Eq + Hash + Clone {
+pub trait Variable: Debug + Eq + Hash + Clone {
   fn new() -> Self;
 }
-impl VariableImpl for Variable {
+impl Variable for VariableImpl {
   fn new() -> Self {
-    Variable::new()
+    VariableImpl::new()
   }
 }
-impl VariableImpl for Rc<Variable> {
+impl Variable for Rc<VariableImpl> {
   fn new() -> Self {
-    Rc::new(Variable::new())
+    Rc::new(VariableImpl::new())
   }
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum UpdateComp<T: FunctionTerm, V: VariableImpl> {
+pub enum UpdateComp<T: FunctionTerm, V: Variable> {
   F(T),
   X(V),
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum OutputComp<T, V: VariableImpl> {
+pub enum OutputComp<T, V: Variable> {
   A(T),
   X(V),
 }
 
 pub type FunctionTermImpl<T> = Lambda<Predicate<T>>;
+
+#[cfg(test)]
+pub mod tests {
+  use super::*;
+  use std::collections::{
+    hash_map::{DefaultHasher, RandomState},
+    HashSet,
+  };
+  use std::hash::Hasher;
+  use std::iter::FromIterator;
+
+  #[test]
+  fn new_var_is_new() {
+    let var_1 = VariableImpl::new();
+    let var_2 = VariableImpl::new();
+
+    assert_eq!(var_1, var_1);
+    assert_ne!(var_1, var_2);
+    assert_eq!(var_2, var_2);
+    assert_ne!(var_2, var_1);
+  }
+
+  #[test]
+  fn var_distingish_from_another() {
+    fn new() -> Rc<VariableImpl> {
+      Variable::new()
+    }
+    let v1 = new();
+    let v2 = new();
+    let v3 = v1.clone();
+
+    assert_ne!(v1, v2);
+    assert!(v1 == v3 && v1.0 == v3.0);
+
+    let v1_hash = {
+      let mut hasher = DefaultHasher::new();
+      v1.hash(&mut hasher);
+      hasher.finish()
+    };
+    let v2_hash = {
+      let mut hasher = DefaultHasher::new();
+      v2.hash(&mut hasher);
+      hasher.finish()
+    };
+    let v3_hash = {
+      let mut hasher = DefaultHasher::new();
+      v3.hash(&mut hasher);
+      hasher.finish()
+    };
+
+    assert_ne!(v1_hash, v2_hash);
+    assert_eq!(v1_hash, v3_hash);
+
+    let mut vars100 = HashSet::with_hasher(RandomState::new());
+    for _ in 0..100 {
+      vars100.insert(new());
+    }
+
+    let v = new();
+    let var1 = vec![v; 100];
+    let var1 = HashSet::<_, RandomState>::from_iter(var1.iter());
+
+    assert_eq!(vars100.len(), 100);
+    assert_eq!(var1.len(), 1);
+  }
+}

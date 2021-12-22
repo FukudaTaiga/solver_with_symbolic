@@ -7,7 +7,7 @@ pub mod transducer;
 
 use char_util::CharWrap;
 use smt2::Smt2;
-use state::State;
+use state::StateImpl;
 use std::{env, fs::File, io::Read, rc::Rc};
 
 pub fn run() {
@@ -22,7 +22,7 @@ pub fn run() {
     }
   }
 
-  let smt2 = Smt2::<CharWrap, Rc<State>>::parse(&input).unwrap();
+  let smt2 = Smt2::<CharWrap, Rc<StateImpl>>::parse(&input).unwrap();
 
   println!("{:?}", smt2);
 }
@@ -30,26 +30,77 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use char_util::FromChar;
-  use state::State;
+  use regular::{recognizable::Recognizable, regex::Regex};
   use transducer::sst_factory::SstBuilder;
-  use transducer::term::Variable;
 
-  fn to_charwrap(vs: &[&str]) -> Vec<CharWrap> {
-    vs.into_iter()
-      .map(|s| {
-        let mut w = s
-          .chars()
-          .map(|c| CharWrap::from_char(c))
-          .collect::<Vec<_>>();
-        w.push(CharWrap::Separator);
-        w
-      })
-      .reduce(|mut acc: Vec<CharWrap>, v| {
-        acc.extend(v);
-        acc
-      })
-      .unwrap_or(vec![])
+  type Builder = SstBuilder<CharWrap, StateImpl, VariableImpl>;
+  type Smt = Smt2<CharWrap, StateImpl>;
+
+  pub mod helper {
+    use super::*;
+    use char_util::FromChar;
+    pub use state::StateImpl;
+    use transducer::term::OutputComp;
+    pub use transducer::term::VariableImpl;
+
+    pub fn chars<T: FromChar>(s: &str) -> Vec<T> {
+      s.chars().map(|c| T::from_char(c)).collect()
+    }
+
+    pub fn to_replacer<T: FromChar>(s: &str) -> Vec<OutputComp<T, VariableImpl>> {
+      s.chars().map(|c| OutputComp::A(T::from_char(c))).collect()
+    }
+
+    pub fn to_charwrap<T: FromChar>(vs: &[&str]) -> Vec<T> {
+      vs.into_iter()
+        .map(|s| {
+          let mut w = s.chars().map(|c| T::from_char(c)).collect::<Vec<_>>();
+          w.push(T::separator());
+          w
+        })
+        .reduce(|mut acc, v| {
+          acc.extend(v);
+          acc
+        })
+        .unwrap_or(vec![])
+    }
+  }
+
+  use helper::*;
+
+  #[test]
+  fn symbolic_pre_image() {
+    let abc_to_xyz = Builder::replace_all_reg(Regex::seq("abc"), to_replacer("xyz"));
+    let xyz_ = Regex::seq("xyz")
+      .concat(Regex::All.star())
+      .to_sym_fa::<StateImpl>();
+
+    {
+      assert!(xyz_.member(&chars("xyz")));
+      assert!(xyz_.member(&chars("xyzfff")));
+      assert!(!xyz_.member(&chars("xy")));
+      assert!(!xyz_.member(&chars("abc")));
+      assert!(!xyz_.member(&chars("abcfff")));
+      assert!(!xyz_.member(&chars("ab")));
+      assert!(!xyz_.member(&chars("kkk")));
+    }
+
+    let abc_ = xyz_.pre_image(abc_to_xyz);
+
+    eprintln!("pre states: {:?}", abc_.states);
+    eprintln!("pre trans: {:?}", abc_.transition);
+    eprintln!("pre init: {:?}", abc_.initial_state);
+    eprintln!("pre fs: {:?}", abc_.final_states);
+
+    {
+      assert!(abc_.member(&chars("xyz")));
+      assert!(abc_.member(&chars("xyzfff")));
+      assert!(!abc_.member(&chars("xy")));
+      assert!(abc_.member(&chars("abc")));
+      assert!(abc_.member(&chars("abcfff")));
+      assert!(!abc_.member(&chars("ab")));
+      assert!(!abc_.member(&chars("kkk")));
+    }
   }
 
   #[test]
@@ -73,9 +124,9 @@ mod tests {
       (check-sat)
       "#;
 
-    let smt2 = Smt2::<CharWrap, Rc<State>>::parse(input).unwrap();
+    let smt2 = Smt::parse(input).unwrap();
 
-    let sst_builder = SstBuilder::<CharWrap, Rc<State>, Rc<Variable>>::init(smt2.vars().len());
+    let sst_builder = Builder::init(smt2.vars().len());
 
     let ssts = sst_builder.generate(smt2.straight_line());
 

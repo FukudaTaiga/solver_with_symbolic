@@ -1,7 +1,7 @@
 use super::term::{FunctionTerm, FunctionTermImpl};
 use crate::{
   boolean_algebra::BoolAlg,
-  state::{StateImpl, StateMachine},
+  state::{State, StateMachine},
 };
 use std::{
   collections::{HashMap, HashSet},
@@ -20,7 +20,7 @@ type Target<F, S> = (S, Vec<Rc<F>>);
 pub struct SymFST<F, S>
 where
   F: FunctionTerm,
-  S: StateImpl,
+  S: State,
 {
   states: HashSet<S>,
   initial_state: S,
@@ -30,7 +30,7 @@ where
 impl<F, S> SymFST<F, S>
 where
   F: FunctionTerm + Clone,
-  S: StateImpl,
+  S: State,
 {
   pub fn new(
     states: HashSet<S>,
@@ -53,24 +53,17 @@ where
     possibilities.push((self.initial_state.clone(), vec![]));
 
     while let Some(c) = input.next() {
-      possibilities = possibilities
-        .into_iter()
-        .flat_map(|(state, w)| {
-          self
-            .transition
-            .iter()
-            .filter_map(move |((p, phi), (q, map))| {
-              if state == *p && phi.denotate(c) {
-                let mut w = w.clone();
-                w.extend(map.into_iter().map(|f| Domain::<F>::clone(f.apply(c))));
-                Some((S::clone(q), w))
-              } else {
-                None
-              }
-            })
-            .collect::<Vec<_>>()
-        })
-        .collect()
+      possibilities = self.step(possibilities, |(state, w)| {
+        move |((p, phi), (q, map))| {
+          if state == *p && phi.denotate(c) {
+            let mut w = w.clone();
+            w.extend(map.into_iter().map(|f| Domain::<F>::clone(f.apply(c))));
+            Some((S::clone(q), w))
+          } else {
+            None
+          }
+        }
+      })
     }
 
     possibilities
@@ -88,7 +81,7 @@ where
 impl<F, S> StateMachine for SymFST<F, S>
 where
   F: FunctionTerm + Clone,
-  S: StateImpl,
+  S: State,
 {
   type StateType = S;
 

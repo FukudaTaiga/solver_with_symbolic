@@ -1,88 +1,38 @@
 use std::{
   collections::{HashMap, HashSet},
   fmt::Debug,
-  hash::{Hash, Hasher},
+  hash::Hash,
+  sync::atomic::{AtomicUsize, Ordering},
   rc::Rc,
-  cell::{RefCell},
 };
 
-static mut INTERNAL: usize = 0;
-fn inc() -> usize {
-  unsafe {
-    INTERNAL += 1;
-    INTERNAL
+static STATE_CNT: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, PartialEq, Hash, Eq, Clone)]
+pub struct StateImpl(usize);
+impl StateImpl {
+  pub fn new() -> StateImpl {
+    StateImpl(STATE_CNT.fetch_add(1, Ordering::SeqCst))
   }
 }
 
-#[derive(Debug, Hash, Eq)]
-pub struct State(usize);
-impl State {
-  pub fn new() -> State {
-    State(inc())
-  }
-}
-impl Clone for State {
-  fn clone(&self) -> Self {
-    State(self.0)
-  }
-}
-impl PartialEq for State {
-  fn eq(&self, other: &Self) -> bool {
-    //std::ptr::eq(self, other)
-    self.0 == other.0
-  }
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct MutableState(Rc<RefCell<State>>);
-impl Hash for MutableState {
-  fn hash<H: Hasher>(&self, state: &mut H) {
-    self.0.borrow().hash(state)
-  }
-}
-
-pub trait Mutable {
-  type Item;
-
-  fn update(&mut self, value: Self::Item);
-}
-impl Mutable for MutableState {
-  type Item = State;
-
-  fn update(&mut self, value: Self::Item) {
-    loop {
-      if let Ok(mut ptr) = self.0.try_borrow_mut() {
-        *ptr = value;
-        break;
-      } else {
-        println!("warning: race condition occurs.");
-      }
-    }
-  }
-}
-
-pub trait StateImpl: Clone + PartialEq + Eq + Hash + Debug {
+pub trait State: Clone + PartialEq + Eq + Hash + Debug {
   fn new() -> Self;
 }
-impl StateImpl for State {
+impl State for StateImpl {
   fn new() -> Self {
-    State::new()
+    StateImpl::new()
   }
 }
-impl StateImpl for Rc<State> {
+impl State for Rc<StateImpl> {
   fn new() -> Self {
-    Rc::new(State::new())
-  }
-}
-impl StateImpl for MutableState {
-  fn new() -> Self {
-    MutableState(Rc::new(RefCell::new(State::new())))
+    Rc::new(StateImpl::new())
   }
 }
 
 /** trait for state machine */
 pub trait StateMachine: Sized {
-  type StateType: StateImpl;
+  type StateType: State;
 
   /** Source of the transition */
   type Source: Eq + Hash + Clone;
@@ -112,18 +62,18 @@ pub trait StateMachine: Sized {
   fn is_unreachable(s: &Self::Source) -> bool;
 
   fn minimize(mut self) -> Self {
-    let mut stack = vec![self.initial_state().clone()];
+    let mut stack = vec![self.initial_state()];
     let mut reachables = vec![];
     while let Some(state) = stack.pop() {
       reachables.push(state.clone());
 
       for (s, t) in self.transition() {
-        if *Self::source_to_state(s) == state
+        if Self::source_to_state(s) == state
           && !reachables.contains(Self::target_to_state(t))
-          && !stack.contains(Self::target_to_state(t))
+          && !stack.contains(&Self::target_to_state(t))
           && !Self::is_unreachable(s)
         {
-          stack.push(Self::target_to_state(t).clone());
+          stack.push(Self::target_to_state(t));
         }
       }
     }
@@ -193,18 +143,30 @@ pub trait StateMachine: Sized {
 
     self
   }
+
+  fn step<Next, F: FnMut((&Self::Source, &Self::Target)) -> Option<Next>>(
+    &self,
+    possibilities: Vec<Next>,
+    filter_map: impl Fn(Next) -> F,
+  ) -> Vec<Next> {
+    possibilities
+      .into_iter()
+      .flat_map(|curr| self.transition().iter().filter_map(filter_map(curr)))
+      .collect()
+  }
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
   use super::*;
-  use std::collections::hash_map::RandomState;
+  use std::collections::hash_map::{RandomState, DefaultHasher};
+  use std::hash::Hasher;
   use std::iter::FromIterator;
 
   #[test]
   fn new_state_is_new() {
-    let state_1 = State::new();
-    let state_2 = State::new();
+    let state_1 = StateImpl::new();
+    let state_2 = StateImpl::new();
 
     assert_eq!(state_1, state_1);
     assert_ne!(state_1, state_2);
@@ -214,12 +176,42 @@ mod tests {
 
   #[test]
   fn state_distingish_from_another() {
-    let mut states100 = HashSet::new();
+    fn new() -> Rc<StateImpl> {
+      State::new()
+    }
+    
+    let s1 = new();
+    let s2 = new();
+    let s3 = s1.clone();
+
+    assert_ne!(s1, s2);
+    assert!(s1 == s3 && s1.0 == s3.0);
+
+    let s1_hash = {
+      let mut hasher = DefaultHasher::new();
+      s1.hash(&mut hasher);
+      hasher.finish()
+    };
+    let s2_hash = {
+      let mut hasher = DefaultHasher::new();
+      s2.hash(&mut hasher);
+      hasher.finish()
+    };
+    let s3_hash = {
+      let mut hasher = DefaultHasher::new();
+      s3.hash(&mut hasher);
+      hasher.finish()
+    };
+
+    assert_ne!(s1_hash, s2_hash);
+    assert_eq!(s1_hash, s3_hash);
+
+    let mut states100 = HashSet::with_hasher(RandomState::new());
     for _ in 0..100 {
-      states100.insert(State::new());
+      states100.insert(new());
     }
 
-    let state = State::new();
+    let state = new();
     let states1 = vec![state; 100];
     let states1 = HashSet::<_, RandomState>::from_iter(states1.iter());
 
