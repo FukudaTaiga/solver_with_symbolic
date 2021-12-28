@@ -165,11 +165,7 @@ impl<T: FromChar, S: State> Constraints<T, S> {
   pub fn filter_sl(&self, idx: VarIndex) -> Option<&StraightLineConstraint<T, S>> {
     let mut filtered = self.0.iter().filter_map(|constraint| {
       if let Constraint::STLine(sl_cons) = constraint {
-        if sl_cons.0 == idx {
-          Some(sl_cons)
-        } else {
-          None
-        }
+        (sl_cons.0 == idx).then(|| sl_cons)
       } else {
         None
       }
@@ -185,11 +181,7 @@ impl<T: FromChar, S: State> Constraints<T, S> {
   pub fn filter_reg(&self, idx: VarIndex) -> Vec<&RegularConstraint<T>> {
     let filtered = self.0.iter().filter_map(|constraint| {
       if let Constraint::Reg(reg_cons) = constraint {
-        if reg_cons.0 == idx {
-          Some(reg_cons)
-        } else {
-          None
-        }
+        (reg_cons.0 == idx).then(|| reg_cons)
       } else {
         None
       }
@@ -200,11 +192,7 @@ impl<T: FromChar, S: State> Constraints<T, S> {
   pub fn filter_int(&self, idx: VarIndex) -> Vec<&IntLinearConstraint> {
     let filtered = self.0.iter().filter_map(|constraint| {
       if let Constraint::Linear(il_cons) = constraint {
-        if il_cons.0 == idx {
-          Some(il_cons)
-        } else {
-          None
-        }
+        (il_cons.0 == idx).then(|| il_cons)
       } else {
         None
       }

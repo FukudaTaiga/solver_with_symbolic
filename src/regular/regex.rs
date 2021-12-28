@@ -20,11 +20,7 @@ const NO_MATCHING_BRA: &str = "Parse Error: No matching bracket '(' found";
 const NO_MATCHING_CKET: &str = "Parse Error: No matching bracket ')' found";
 const UNNECESSARY_BRACKET: &str = "Parse Error: Unnecessary brackets found";
 
-/**
- * may prefer Rc to Box.
- * but Regex size won't go so large, Box will be enough.
- */
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, std::hash::Hash, Eq)]
 pub enum Regex<T: PartialOrd> {
   Empty,
   Epsilon,
@@ -66,19 +62,43 @@ impl<T: FromChar> Regex<T> {
   }
 
   pub fn concat(self, other: Regex<T>) -> Self {
-    Regex::Concat(Box::new(self), Box::new(other))
+    match (self, other) {
+      (Regex::Empty, _) | (_, Regex::Empty) => Regex::Empty,
+      (Regex::Epsilon, r) | (r, Regex::Epsilon) => r,
+      (left, right) => Regex::Concat(Box::new(left), Box::new(right)),
+    }
   }
 
   pub fn or(self, other: Regex<T>) -> Self {
-    Regex::Or(Box::new(self), Box::new(other))
+    match (self, other) {
+      (Regex::Empty, r) | (r, Regex::Empty) => r,
+      (Regex::Epsilon, Regex::Star(r)) | (Regex::Star(r), Regex::Epsilon) => Regex::Star(r),
+      (left, right) => if left == right { left } else { Regex::Or(Box::new(left), Box::new(right)) },
+    }
   }
 
   pub fn inter(self, other: Regex<T>) -> Self {
-    Regex::Inter(Box::new(self), Box::new(other))
+    match (self, other) {
+      (Regex::Epsilon, Regex::Star(_))
+      | (Regex::Star(_), Regex::Epsilon)
+      | (Regex::Epsilon, Regex::Epsilon) => Regex::Epsilon,
+      (Regex::Empty, _) | (_, Regex::Empty) | (Regex::Epsilon, _) | (_, Regex::Epsilon) => {
+        Regex::Empty
+      }
+      (left, right) => if left == right { left } else { Regex::Inter(Box::new(left), Box::new(right)) },
+    }
   }
 
   pub fn star(self) -> Self {
-    Regex::Star(Box::new(self))
+    if let Regex::Empty = self {
+      Regex::Epsilon
+    } else if let Regex::Epsilon = self {
+      Regex::Epsilon
+    } else if let Regex::Star(r) = self {
+      *r
+    } else {
+      Regex::Star(Box::new(self))
+    }
   }
 
   pub fn plus(self) -> Self {
@@ -86,7 +106,13 @@ impl<T: FromChar> Regex<T> {
   }
 
   pub fn not(self) -> Self {
-    Regex::Not(Box::new(self))
+    if let Regex::Empty = self {
+      Regex::all().star()
+    } else if let Regex::Not(r) = self {
+      *r
+    } else {
+      Regex::Not(Box::new(self))
+    }
   }
 
   /**
@@ -147,15 +173,7 @@ impl<T: FromChar> Regex<T> {
   /** with, thompson  --- clushkul, partial derivative */
   pub fn to_sym_fa<S: State>(self) -> Sfa<T, S> {
     match self {
-      Regex::Empty => {
-        let initial_state = S::new();
-        let mut states = HashSet::new();
-        let final_states = HashSet::new();
-        let transition = HashMap::new();
-        states.insert(initial_state.clone());
-
-        Sfa::new(states, initial_state, final_states, transition)
-      }
+      Regex::Empty => Sfa::empty(),
       Regex::Epsilon => {
         let initial_state = S::new();
         let mut states = HashSet::new();
@@ -169,8 +187,8 @@ impl<T: FromChar> Regex<T> {
         final_states.insert(initial_state.clone());
 
         transition.insert(
-          (initial_state.clone(), Predicate::top()),
-          refusal_state.clone(),
+          (initial_state.clone(), Predicate::all_char()),
+          vec![refusal_state.clone()],
         );
 
         Sfa::new(states, initial_state, final_states, transition)
@@ -186,7 +204,10 @@ impl<T: FromChar> Regex<T> {
         states.insert(final_state.clone());
         final_states.insert(final_state.clone());
 
-        transition.insert((initial_state.clone(), Predicate::eq(a)), final_state);
+        transition.insert(
+          (initial_state.clone(), Predicate::char(a)),
+          vec![final_state],
+        );
 
         Sfa::new(states, initial_state, final_states, transition)
       }
@@ -202,7 +223,10 @@ impl<T: FromChar> Regex<T> {
 
         final_states.insert(final_state.clone());
 
-        transition.insert((initial_state.clone(), Predicate::top()), final_state);
+        transition.insert(
+          (initial_state.clone(), Predicate::all_char()),
+          vec![final_state],
+        );
 
         Sfa::new(states, initial_state, final_states, transition)
       }
@@ -220,7 +244,7 @@ impl<T: FromChar> Regex<T> {
 
         transition.insert(
           (initial_state.clone(), Predicate::range(left, right)),
-          final_state,
+          vec![final_state],
         );
 
         Sfa::new(states, initial_state, final_states, transition)
@@ -242,11 +266,9 @@ impl<T: FromChar> Regex<T> {
         "str.to.re" => {
           if let [term] = &arguments[..] {
             if let Term::Constant(Constant::String(s)) = term {
-              s.chars()
-                .fold(Regex::Epsilon, |reg, c| {
-                  reg.concat(Regex::Element(T::from_char(c)))
-                })
-                .reduce()
+              s.chars().fold(Regex::Epsilon, |reg, c| {
+                reg.concat(Regex::Element(T::from_char(c)))
+              })
             } else {
               panic!("Syntax Error")
             }
@@ -256,24 +278,29 @@ impl<T: FromChar> Regex<T> {
         }
         "re.++" => arguments
           .into_iter()
-          .fold(Regex::Epsilon, |reg, term| reg.concat(Regex::new(term)))
-          .reduce(),
+          .map(|term| Regex::new(term))
+          .reduce(|reg, curr| reg.concat(curr))
+          .expect("Syntax Error"),
         "re.union" => arguments
           .into_iter()
-          .fold(Regex::Epsilon, |reg, term| reg.or(Regex::new(term)))
-          .reduce(),
-        "re.inter" => unimplemented!(),
+          .map(|term| Regex::new(term))
+          .reduce(|reg, curr| reg.or(curr))
+          .expect("Syntax Error"),
+        "re.inter" => arguments
+          .into_iter()
+          .map(|term| Regex::new(term))
+          .reduce(|reg, curr| reg.inter(curr))
+          .expect("Syntax Error"),
         "re.*" => {
           if let [term] = &arguments[..] {
-            Regex::new(term).reduce().star()
+            Regex::new(term).star()
           } else {
             panic!("Syntax Error")
           }
         }
         "re.+" => {
           if let [term] = &arguments[..] {
-            let regex = Regex::new(term).reduce();
-            regex.clone().concat(regex.star())
+            Regex::new(term).plus()
           } else {
             panic!("Syntax Error")
           }

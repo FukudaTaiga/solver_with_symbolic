@@ -5,14 +5,10 @@ use crate::char_util::FromChar;
 use crate::regular::{regex::Regex, symbolic_automata::Sfa};
 use crate::smt2::{ReplaceTarget, StraightLineConstraint, Transduction, TransductionOp};
 use crate::state::{State, StateMachine};
-use std::{
-  collections::{HashMap, HashSet},
-  rc::Rc,
-};
+use std::collections::{HashMap, HashSet};
 
 pub struct SstBuilder<T: FromChar, S: State, V: Variable> {
   ssts: Vec<Sst<T, S, V>>,
-  var_num: usize,
 }
 impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
   pub fn replace_all_reg(reg: Regex<T>, replace: Vec<OutputComp<T, V>>) -> Sst<T, S, V> {
@@ -37,6 +33,7 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
       .iter()
       .map(|state| (S::clone(state), sfa.state_predicate(state).not()))
       .collect::<HashMap<_, _>>();
+
     let Sfa {
       states,
       transition: transition_,
@@ -57,46 +54,51 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
 
     let mut transition = HashMap::new();
 
+    let suc_next = {
+      let mut v = vec![UpdateComp::X(V::clone(&res))];
+      v.extend(replace_update.iter().cloned());
+      v
+    };
+    let suc_reset = {
+      let mut v = vec![UpdateComp::X(V::clone(&res))];
+      v.extend(replace_update.iter().cloned());
+      v.push(UpdateComp::F(Lambda::identity()));
+      v
+    };
     for p in &final_states {
       /*
        * succeed to match and try to next match
        * variable maps
        */
       let start = HashMap::from([
-        (V::clone(&res), {
-          let mut v = vec![UpdateComp::X(V::clone(&res))];
-          v.extend(replace_update.iter().map(|up| up.clone()));
-          v
-        }),
+        (V::clone(&res), suc_next.clone()),
         (V::clone(&acc), vec![UpdateComp::F(Lambda::identity())]),
       ]);
       let reset = HashMap::from([
-        (V::clone(&res), {
-          let mut v = vec![UpdateComp::X(V::clone(&res))];
-          v.extend(replace_update.iter().map(|up| up.clone()));
-          v.push(UpdateComp::F(Lambda::identity()));
-          v
-        }),
+        (V::clone(&res), suc_reset.clone()),
         (V::clone(&acc), vec![]),
       ]);
 
-      for ((_, phi), q) in &initial_maps {
+      for ((_, phi), target) in &initial_maps {
         transition.insert(
-          (S::clone(&p), Rc::clone(&phi)),
-          (S::clone(*q), start.clone()),
+          (S::clone(p), phi.clone()),
+          target
+            .into_iter()
+            .map(|q| (S::clone(q), start.clone()))
+            .collect(),
         );
       }
 
       transition.insert(
         (
           S::clone(p),
-          Rc::clone(not_predicates.get(&initial_state).unwrap()),
+          not_predicates.get(&initial_state).unwrap().clone(),
         ),
-        (S::clone(&initial_state), reset),
+        vec![(S::clone(&initial_state), reset)],
       );
     }
 
-    for ((p, phi), q) in &transition_ {
+    for ((p, phi), target) in &transition_ {
       if !final_states.contains(p) {
         /* variable maps */
         let step = HashMap::from([
@@ -129,14 +131,23 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
         ]);
 
         /* matches current target char and go to next state. */
-        transition.insert((S::clone(p), Rc::clone(phi)), (S::clone(q), step));
+        transition.insert(
+          (S::clone(p), phi.clone()),
+          target
+            .into_iter()
+            .map(|q| (S::clone(q), step.clone()))
+            .collect(),
+        );
 
         let not_pred_p = not_predicates.get(p).unwrap();
-        for ((_, phi), q) in &initial_maps {
+        for ((_, phi), target) in &initial_maps {
           /* first char of a given regex */
           transition.insert(
             (S::clone(p), not_pred_p.and(phi)),
-            (S::clone(*q), start.clone()),
+            target
+              .into_iter()
+              .map(|q| (S::clone(q), start.clone()))
+              .collect(),
           );
         }
 
@@ -144,7 +155,7 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
         /* failed to match next and any first char of the regex */
         transition.insert(
           (S::clone(p), not_pred_p.and(not_pred_init)),
-          (S::clone(&initial_state), reset),
+          vec![(S::clone(&initial_state), reset)],
         );
       }
     }
@@ -202,108 +213,113 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
       .collect::<HashMap<_, _>>();
     let Sfa {
       mut states,
-      transition,
+      transition: transition_,
       initial_state,
       final_states,
     } = sfa;
+
     /* whole result variable */
     let res = V::new();
     /* accumulator variable of current matches */
     let acc = V::new();
     let variables = HashSet::from([V::clone(&res), V::clone(&acc)]);
-    let initial_maps = transition
+
+    let initial_maps = transition_
       .iter()
       .filter(|((p, _), _)| *p == initial_state)
       .collect::<Vec<_>>();
+
     /* once matches given regex, cycle and stack the rest of input on result */
     let cycle_state = S::new();
-    let top = Predicate::top();
-    let mut transition = transition
-      .iter()
-      .flat_map(|((p, phi), q)| {
-        if final_states.contains(p) {
-          /* transition for final states is created by next chain */
-          vec![]
-        } else {
-          /*
-           * variable maps
-           */
-          let update = HashMap::from([
-            (V::clone(&res), vec![UpdateComp::X(V::clone(&res))]),
-            (
-              V::clone(&acc),
-              vec![
-                UpdateComp::X(V::clone(&acc)),
-                UpdateComp::F(Lambda::identity()),
-              ],
-            ),
-          ]);
-          let reset = HashMap::from([
-            (
-              V::clone(&res),
-              vec![
-                UpdateComp::X(V::clone(&res)),
-                UpdateComp::X(V::clone(&acc)),
-                UpdateComp::F(Lambda::identity()),
-              ],
-            ),
-            (V::clone(&acc), vec![]),
-          ]);
-          let start = HashMap::from([
-            (
-              V::clone(&res),
-              vec![UpdateComp::X(V::clone(&res)), UpdateComp::X(V::clone(&acc))],
-            ),
-            (V::clone(&acc), vec![UpdateComp::F(Lambda::identity())]),
-          ]);
-          /* v - result of this iteration */
-          let mut v = initial_maps
-            .iter()
-            .map(|((_, sphi), sq)| {
-              /* they're first char of a given regex */
+    let top = Predicate::all_char();
+
+    let mut transition = HashMap::new();
+
+    for p in &final_states {
+      /* succeed to match and go to cycle state */
+      let to_cycle = HashMap::from([(V::clone(&res), {
+        let mut v = vec![UpdateComp::X(V::clone(&res))];
+        v.extend(replace_update.iter().map(|up| up.clone()));
+        v.push(UpdateComp::F(Lambda::identity()));
+        v
+      })]);
+      transition.insert(
+        (S::clone(p), top.clone()),
+        vec![(S::clone(&cycle_state), to_cycle)],
+      );
+    }
+
+    for ((p, phi), target) in &transition_ {
+      if !final_states.contains(p) {
+        /* variable maps */
+        let update = HashMap::from([
+          (V::clone(&res), vec![UpdateComp::X(V::clone(&res))]),
+          (
+            V::clone(&acc),
+            vec![
+              UpdateComp::X(V::clone(&acc)),
+              UpdateComp::F(Lambda::identity()),
+            ],
+          ),
+        ]);
+        let reset = HashMap::from([
+          (
+            V::clone(&res),
+            vec![
+              UpdateComp::X(V::clone(&res)),
+              UpdateComp::X(V::clone(&acc)),
+              UpdateComp::F(Lambda::identity()),
+            ],
+          ),
+          (V::clone(&acc), vec![]),
+        ]);
+        let start = HashMap::from([
+          (
+            V::clone(&res),
+            vec![UpdateComp::X(V::clone(&res)), UpdateComp::X(V::clone(&acc))],
+          ),
+          (V::clone(&acc), vec![UpdateComp::F(Lambda::identity())]),
+        ]);
+
+        for ((_, phi), target) in &initial_maps {
+          /* they're first char of a given regex */
+          for q in *target {
+            transition.insert(
               (
-                (
-                  S::clone(p),
-                  not_predicates.get(p).unwrap_or(&Predicate::bot()).and(sphi),
-                ),
-                (S::clone(*sq), start.clone()),
-              )
-            })
-            .collect::<Vec<_>>();
-          v.push((
-            /* failed to match next and any first char of the regex */
-            (
-              S::clone(p),
-              not_predicates.get(p).unwrap_or(&Predicate::bot()).and(
-                not_predicates
-                  .get(&initial_state)
-                  .unwrap_or(&Predicate::bot()),
+                S::clone(p),
+                not_predicates.get(p).unwrap_or(&Predicate::bot()).and(phi),
               ),
-            ),
-            (S::clone(&initial_state), reset),
-          ));
-          /* matches current target char and go to next state. */
-          v.push(((S::clone(p), Rc::clone(phi)), (S::clone(q), update)));
-          v
+              vec![(S::clone(q), start.clone())],
+            );
+          }
         }
-      })
-      .chain(final_states.iter().flat_map(|p| {
-        /* succeed to match and go to cycle state */
-        let to_cycle = HashMap::from([(V::clone(&res), {
-          let mut v = vec![UpdateComp::X(V::clone(&res))];
-          v.extend(replace_update.iter().map(|up| up.clone()));
-          v.push(UpdateComp::F(Lambda::identity()));
-          v
-        })]);
-        vec![(
-          (S::clone(&p), Rc::clone(&top)),
-          (S::clone(&cycle_state), to_cycle),
-        )]
-      }))
-      .collect::<HashMap<_, _>>();
+
+        /* failed to match next and any first char of the regex */
+        transition.insert(
+          (
+            S::clone(p),
+            not_predicates.get(p).unwrap_or(&Predicate::bot()).and(
+              not_predicates
+                .get(&initial_state)
+                .unwrap_or(&Predicate::bot()),
+            ),
+          ),
+          vec![(S::clone(&initial_state), reset)],
+        );
+        /* matches current target char and go to next state. */
+        transition.insert(
+          (S::clone(p), phi.clone()),
+          target
+            .into_iter()
+            .map(|q| (S::clone(q), update.clone()))
+            .collect(),
+        );
+      }
+    }
+
     transition.insert(
-      (S::clone(&cycle_state), Rc::clone(&top)),
-      (
+      (S::clone(&cycle_state), top.clone()),
+      vec![(
         S::clone(&cycle_state),
         HashMap::from([(
           V::clone(&res),
@@ -312,8 +328,9 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
             UpdateComp::F(Lambda::identity()),
           ],
         )]),
-      ),
+      )],
     );
+
     let mut output_function = states
       .iter()
       .map(|state| {
@@ -331,9 +348,12 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
         }
       })
       .collect::<HashMap<_, _>>();
+
     /* states is used in above iteration, so update it at this line */
     states.insert(S::clone(&cycle_state));
+
     output_function.insert(S::clone(&cycle_state), vec![OutputComp::X(V::clone(&res))]);
+
     Sst::new(
       states,
       variables,
@@ -346,25 +366,20 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
   pub fn reverse() -> Sst<T, S, V> {
     let initial_state = S::new();
     let res = V::new();
-    let mut states = HashSet::new();
-    states.insert(S::clone(&initial_state));
-    let mut variables = HashSet::new();
-    variables.insert(V::clone(&res));
-    let mut output_function = HashMap::new();
-    output_function.insert(
+    let states = HashSet::from([S::clone(&initial_state)]);
+    let variables = HashSet::from([V::clone(&res)]);
+    let output_function = HashMap::from([(
       S::clone(&initial_state),
       vec![OutputComp::X(V::clone(&res))],
-    );
-    let mut transition = HashMap::new();
-    let mut map = HashMap::new();
-    map.insert(
+    )]);
+    let map = HashMap::from([(
       V::clone(&res),
       vec![UpdateComp::F(Lambda::identity()), UpdateComp::X(res)],
-    );
-    transition.insert(
-      (S::clone(&initial_state), Predicate::top()),
-      (S::clone(&initial_state), map),
-    );
+    )]);
+    let transition = HashMap::from([(
+      (S::clone(&initial_state), Predicate::all_char()),
+      vec![(S::clone(&initial_state), map)],
+    )]);
 
     Sst::new(
       states,
@@ -379,25 +394,20 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
     let initial_state = S::new();
     let res = V::new();
 
-    let mut states = HashSet::new();
-    states.insert(S::clone(&initial_state));
-    let mut variables = HashSet::new();
-    variables.insert(V::clone(&res));
-    let mut output_function = HashMap::new();
-    output_function.insert(
+    let states = HashSet::from([S::clone(&initial_state)]);
+    let variables = HashSet::from([V::clone(&res)]);
+    let output_function = HashMap::from([(
       S::clone(&initial_state),
       vec![OutputComp::X(V::clone(&res))],
-    );
-    let mut transition = HashMap::new();
-    let mut map = HashMap::new();
-    map.insert(
+    )]);
+    let map = HashMap::from([(
       V::clone(&res),
       vec![UpdateComp::X(res), UpdateComp::F(Lambda::identity())],
-    );
-    transition.insert(
-      (S::clone(&initial_state), Predicate::top()),
-      (S::clone(&initial_state), map),
-    );
+    )]);
+    let transition = HashMap::from([(
+      (S::clone(&initial_state), Predicate::all_char()),
+      vec![(S::clone(&initial_state), map)],
+    )]);
 
     Sst::new(
       states,
@@ -410,22 +420,19 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
 
   pub fn constant(output: &str) -> Sst<T, S, V> {
     let initial_state = S::new();
-    let mut states = HashSet::new();
-    states.insert(S::clone(&initial_state));
+    let states = HashSet::from([S::clone(&initial_state)]);
     let variables = HashSet::new();
-    let mut output_function = HashMap::new();
-    output_function.insert(
+    let output_function = HashMap::from([(
       S::clone(&initial_state),
       output
         .chars()
         .map(|c| OutputComp::A(T::from_char(c)))
         .collect(),
-    );
-    let mut transition = HashMap::new();
-    transition.insert(
-      (S::clone(&initial_state), Predicate::top()),
-      (S::clone(&initial_state), HashMap::new()),
-    );
+    )]);
+    let transition = HashMap::from([(
+      (S::clone(&initial_state), Predicate::all_char()),
+      vec![(S::clone(&initial_state), HashMap::new())],
+    )]);
 
     Sst::new(
       states,
@@ -439,7 +446,6 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
   pub fn init(var_num: usize) -> Self {
     let mut builder = SstBuilder {
       ssts: Vec::with_capacity(var_num),
-      var_num,
     };
 
     for _ in 0..var_num {
@@ -549,28 +555,23 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
     let initial_state = S::new();
     let var = V::new();
 
-    let mut states = HashSet::new();
-    states.insert(S::clone(&initial_state));
-    let mut variables = HashSet::new();
-    variables.insert(V::clone(&var));
-    let mut output_function = HashMap::new();
-    output_function.insert(
+    let states = HashSet::from([S::clone(&initial_state)]);
+    let variables = HashSet::from([V::clone(&var)]);
+    let output_function = HashMap::from([(
       S::clone(&initial_state),
       vec![OutputComp::X(V::clone(&var))],
-    );
-    let mut transition = HashMap::new();
-    let mut map = HashMap::new();
-    map.insert(
+    )]);
+    let map = HashMap::from([(
       V::clone(&var),
       vec![
         UpdateComp::X(V::clone(&var)),
         UpdateComp::F(Lambda::identity()),
       ],
-    );
-    transition.insert(
-      (S::clone(&initial_state), Predicate::top()),
-      (S::clone(&initial_state), map),
-    );
+    )]);
+    let transition = HashMap::from([(
+      (S::clone(&initial_state), Predicate::all_char()),
+      vec![(S::clone(&initial_state), map)],
+    )]);
 
     vars.push(var);
 
@@ -590,11 +591,11 @@ pub mod tests {
   use crate::tests::helper::*;
   use std::iter::FromIterator;
 
-  type TestBuilder = SstBuilder<char, StateImpl, VariableImpl>;
+  type Builder = SstBuilder<char, StateImpl, VariableImpl>;
 
   #[test]
   fn identity() {
-    let id = TestBuilder::identity();
+    let id = Builder::identity();
 
     assert_eq!(String::from_iter(&id.run(&chars(""))[0]), "".to_string());
     assert_eq!(
@@ -610,7 +611,7 @@ pub mod tests {
   #[test]
   fn constant() {
     let cnst = "this is a constant".to_string();
-    let id = TestBuilder::constant(&cnst);
+    let id = Builder::constant(&cnst);
 
     assert_eq!(String::from_iter(&id.run(&chars(""))[0]), cnst);
     assert_eq!(String::from_iter(&id.run(&chars("xyx"))[0]), cnst);
@@ -619,7 +620,7 @@ pub mod tests {
 
   #[test]
   fn reverse() {
-    let rev = TestBuilder::reverse();
+    let rev = Builder::reverse();
 
     assert_eq!(String::from_iter(&rev.run(&chars(""))[0]), "".to_string());
     assert_eq!(
@@ -635,20 +636,20 @@ pub mod tests {
   #[test]
   #[should_panic]
   fn reject_empty_substr_all_reg() {
-    let _rep = TestBuilder::replace_all_reg(Regex::Empty, vec![]);
+    let _rep = Builder::replace_all_reg(Regex::Empty, vec![]);
     eprintln!("unreachable");
   }
 
   #[test]
   #[should_panic]
   fn reject_epsilon_substr_all_reg() {
-    let _rep = TestBuilder::replace_all_reg(Regex::Epsilon, vec![]);
+    let _rep = Builder::replace_all_reg(Regex::Epsilon, vec![]);
     eprintln!("unreachable");
   }
 
   #[test]
   fn abc_to_xyz_all_reg() {
-    let rep = TestBuilder::replace_all_reg(Regex::seq("abc"), to_replacer("xyz"));
+    let rep = Builder::replace_all_reg(Regex::seq("abc"), to_replacer("xyz"));
 
     assert_eq!(
       String::from_iter(&rep.run(&chars("abc"))[0]),
@@ -671,7 +672,7 @@ pub mod tests {
 
   #[test]
   fn a_to_many_all_reg() {
-    let rep = TestBuilder::replace_all_reg(
+    let rep = Builder::replace_all_reg(
       Regex::element('a'),
       to_replacer("qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\"),
     );
@@ -700,7 +701,7 @@ pub mod tests {
 
   #[test]
   fn abcxyz_to_1_all_reg() {
-    let rep = TestBuilder::replace_all_reg(Regex::seq("abcxyz"), to_replacer("1"));
+    let rep = Builder::replace_all_reg(Regex::seq("abcxyz"), to_replacer("1"));
 
     assert_eq!(
       String::from_iter(&rep.run(&chars("abcxyz"))[0]),
@@ -723,7 +724,7 @@ pub mod tests {
   #[test]
   #[should_panic]
   fn reject_empty_substr_reg() {
-    let _rep = TestBuilder::replace_reg(Regex::Empty, vec![]);
+    let _rep = Builder::replace_reg(Regex::Empty, vec![]);
 
     eprintln!("unreachable");
   }
@@ -731,14 +732,14 @@ pub mod tests {
   #[test]
   #[should_panic]
   fn reject_epsilon_substr_reg() {
-    let _rep = TestBuilder::replace_reg(Regex::Epsilon, vec![]);
+    let _rep = Builder::replace_reg(Regex::Epsilon, vec![]);
 
     eprintln!("unreachable");
   }
 
   #[test]
   fn abc_to_xyz_reg() {
-    let rep = TestBuilder::replace_reg(Regex::seq("abc"), to_replacer("xyz"));
+    let rep = Builder::replace_reg(Regex::seq("abc"), to_replacer("xyz"));
 
     assert_eq!(
       String::from_iter(&rep.run(&chars("abc"))[0]),
@@ -761,7 +762,7 @@ pub mod tests {
 
   #[test]
   fn a_to_many_reg() {
-    let rep = TestBuilder::replace_reg(
+    let rep = Builder::replace_reg(
       Regex::element('a'),
       to_replacer("qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\"),
     );
@@ -786,7 +787,7 @@ pub mod tests {
 
   #[test]
   fn abcxyz_to_1_reg() {
-    let rep = TestBuilder::replace_reg(Regex::seq("abcxyz"), to_replacer("1"));
+    let rep = Builder::replace_reg(Regex::seq("abcxyz"), to_replacer("1"));
 
     assert_eq!(
       String::from_iter(&rep.run(&chars("abcxyz"))[0]),

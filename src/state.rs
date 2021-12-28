@@ -2,8 +2,8 @@ use std::{
   collections::{HashMap, HashSet},
   fmt::Debug,
   hash::Hash,
-  sync::atomic::{AtomicUsize, Ordering},
   rc::Rc,
+  sync::atomic::{AtomicUsize, Ordering},
 };
 
 static STATE_CNT: AtomicUsize = AtomicUsize::new(0);
@@ -16,7 +16,7 @@ impl StateImpl {
   }
 }
 
-pub trait State: Clone + PartialEq + Eq + Hash + Debug {
+pub trait State: Debug + PartialEq + Eq + Hash + Clone {
   fn new() -> Self;
 }
 impl State for StateImpl {
@@ -30,16 +30,50 @@ impl State for Rc<StateImpl> {
   }
 }
 
+pub trait ToState {
+  type Target: State;
+
+  fn to_state(&self) -> &Self::Target;
+}
+impl<S: State> ToState for S {
+  type Target = S;
+
+  fn to_state(&self) -> &Self::Target {
+    self
+  }
+}
+impl<S: State, T> ToState for (S, T) {
+  type Target = S;
+
+  fn to_state(&self) -> &Self::Target {
+    &self.0
+  }
+}
+
+use crate::boolean_algebra::BoolAlg;
 /** trait for state machine */
 pub trait StateMachine: Sized {
   type StateType: State;
 
-  /** Source of the transition */
-  type Source: Eq + Hash + Clone;
+  type BoolAlg: BoolAlg;
+
   /** Target of the transition */
-  type Target: Clone;
+  type Target: Clone + ToState<Target = Self::StateType>;
+
   /** Determinizer of Output */
-  type FinalSet;
+  type FinalState: ToState<Target = Self::StateType> + Clone;
+  /*
+   * https://stackoverflow.com/questions/50090578/how-to-write-a-trait-bound-for-a-reference-to-an-associated-type-on-the-trait-it
+   * now, there is no way to bound the reference of an associated type.
+   * bounding clone though there is no need to clone all of item.
+   * i.e.
+   *  wanted: filter and clone items -> collect
+   *  current impl: clone -> filter -> collect
+   * still solutions are still open or unstable.
+   */
+  type FinalSet: Clone
+    + IntoIterator<Item = Self::FinalState>
+    + std::iter::FromIterator<Self::FinalState>;
 
   fn states(&self) -> &HashSet<Self::StateType>;
   fn states_mut(&mut self) -> &mut HashSet<Self::StateType>;
@@ -49,17 +83,10 @@ pub trait StateMachine: Sized {
 
   fn final_set(&self) -> &Self::FinalSet;
   fn final_set_mut(&mut self) -> &mut Self::FinalSet;
-  fn final_set_filter_by_states<T: FnMut(&Self::StateType) -> bool>(
-    &self,
-    filter: T,
-  ) -> Self::FinalSet;
 
-  fn source_to_state(s: &Self::Source) -> &Self::StateType;
-  fn target_to_state(t: &Self::Target) -> &Self::StateType;
-
-  fn transition(&self) -> &HashMap<Self::Source, Self::Target>;
-  fn transition_mut(&mut self) -> &mut HashMap<Self::Source, Self::Target>;
-  fn is_unreachable(s: &Self::Source) -> bool;
+  fn transition(&self) -> &HashMap<(Self::StateType, Self::BoolAlg), Vec<Self::Target>>;
+  fn transition_mut(&mut self)
+    -> &mut HashMap<(Self::StateType, Self::BoolAlg), Vec<Self::Target>>;
 
   fn minimize(mut self) -> Self {
     let mut stack = vec![self.initial_state()];
@@ -67,13 +94,15 @@ pub trait StateMachine: Sized {
     while let Some(state) = stack.pop() {
       reachables.push(state.clone());
 
-      for (s, t) in self.transition() {
-        if Self::source_to_state(s) == state
-          && !reachables.contains(Self::target_to_state(t))
-          && !stack.contains(&Self::target_to_state(t))
-          && !Self::is_unreachable(s)
-        {
-          stack.push(Self::target_to_state(t));
+      for ((s, phi), target) in self.transition() {
+        for t in target {
+          if s == state
+            && !reachables.contains(t.to_state())
+            && !stack.contains(&t.to_state())
+            && phi.satisfiable()
+          {
+            stack.push(t.to_state());
+          }
         }
       }
     }
@@ -82,38 +111,48 @@ pub trait StateMachine: Sized {
     *self.transition_mut() = self
       .transition()
       .iter()
-      .filter_map(|(s, t)| {
-        if self.states().contains(Self::source_to_state(s))
-          && self.states().contains(Self::target_to_state(t))
-        {
-          Some((s.clone(), t.clone()))
+      .filter_map(|((s, phi), target)| {
+        if self.states().contains(s) {
+          let target: Vec<_> = target
+            .into_iter()
+            .filter(|t| self.states().contains(t.to_state()))
+            .cloned()
+            .collect();
+          (target.len() != 0).then(|| ((s.clone(), phi.clone()), target))
         } else {
           None
         }
       })
       .collect();
     let mut stack = vec![];
-    *self.final_set_mut() = self.final_set_filter_by_states(|s| {
-      if self.states().contains(s) {
-        stack.push(s.clone());
-        true
-      } else {
-        false
-      }
-    });
+    *self.final_set_mut() = self
+      .final_set()
+      .clone()
+      .into_iter()
+      .filter(|fs| {
+        if self.states().contains(fs.to_state()) {
+          stack.push(fs.to_state().clone());
+          true
+        } else {
+          false
+        }
+      })
+      .collect();
 
     let mut reachables = vec![];
 
     while let Some(state) = stack.pop() {
       reachables.push(state.clone());
 
-      for (s, t) in self.transition() {
-        if *Self::target_to_state(t) == state
-          && !reachables.contains(Self::source_to_state(s))
-          && !stack.contains(Self::source_to_state(s))
-          && !Self::is_unreachable(s)
-        {
-          stack.push(Self::source_to_state(s).clone());
+      for ((s, phi), target) in self.transition() {
+        for t in target {
+          if *t.to_state() == state
+            && !reachables.contains(s)
+            && !stack.contains(s)
+            && phi.satisfiable()
+          {
+            stack.push(s.clone());
+          }
         }
       }
     }
@@ -129,37 +168,84 @@ pub trait StateMachine: Sized {
     *self.transition_mut() = self
       .transition()
       .iter()
-      .filter_map(|(s, t)| {
-        if self.states().contains(Self::source_to_state(s))
-          && self.states().contains(Self::target_to_state(t))
-        {
-          Some((s.clone(), t.clone()))
+      .filter_map(|((s, phi), target)| {
+        if self.states().contains(s) {
+          let target: Vec<_> = target
+            .into_iter()
+            .filter(|t| self.states().contains(t.to_state()))
+            .cloned()
+            .collect();
+          (target.len() != 0).then(|| ((s.clone(), phi.clone()), target))
         } else {
           None
         }
       })
       .collect();
-    *self.final_set_mut() = self.final_set_filter_by_states(|s| self.states().contains(s));
+    *self.final_set_mut() = self
+      .final_set()
+      .clone()
+      .into_iter()
+      .filter(|s| self.states().contains(s.to_state()))
+      .collect();
 
     self
   }
 
-  fn step<Next, F: FnMut((&Self::Source, &Self::Target)) -> Option<Next>>(
-    &self,
-    possibilities: Vec<Next>,
-    filter_map: impl Fn(Next) -> F,
-  ) -> Vec<Next> {
+  fn step<Next, F>(&self, possibilities: Vec<Next>, filter_map: &impl Fn(Next) -> F) -> Vec<Next>
+  where
+    F: FnMut((&(Self::StateType, Self::BoolAlg), &Self::Target)) -> Option<Next>,
+  {
     possibilities
       .into_iter()
-      .flat_map(|curr| self.transition().iter().filter_map(filter_map(curr)))
+      .flat_map(|curr| {
+        let mut fm = filter_map(curr);
+        self.transition().iter().flat_map(move |(source, target)| {
+          target
+            .into_iter()
+            .filter_map(|t| fm((source, t)))
+            .collect::<Vec<_>>()
+        })
+      })
       .collect()
+  }
+
+  fn generalized_run<'a, Next, F, Output>(
+    &self,
+    input: impl IntoIterator<Item = &'a <Self::BoolAlg as BoolAlg>::Domain>,
+    initial_possibilities: Vec<Next>,
+    step_func: &mut F,
+    output_func: impl Fn(Vec<Next>) -> Output,
+  ) -> Output
+  where
+    Next: ToState<Target = Self::StateType> + Clone,
+    F: FnMut(&Next, &<Self::BoolAlg as BoolAlg>::Domain, &Self::Target) -> Next,
+    <Self::BoolAlg as BoolAlg>::Domain: 'a,
+  {
+    let mut possibilities = initial_possibilities;
+
+    for c in input {
+      let mut possibilities_ = possibilities.clone();
+      possibilities.clear();
+
+      for curr in possibilities_.drain(..) {
+        for (source, target) in self.transition() {
+          if &source.0 == curr.to_state() && source.1.denote(c) {
+            for t in target {
+              possibilities.push(step_func(&curr, c, t));
+            }
+          }
+        }
+      }
+    }
+
+    output_func(possibilities)
   }
 }
 
 #[cfg(test)]
 pub mod tests {
   use super::*;
-  use std::collections::hash_map::{RandomState, DefaultHasher};
+  use std::collections::hash_map::{DefaultHasher, RandomState};
   use std::hash::Hasher;
   use std::iter::FromIterator;
 
@@ -179,7 +265,6 @@ pub mod tests {
     fn new() -> Rc<StateImpl> {
       State::new()
     }
-    
     let s1 = new();
     let s2 = new();
     let s3 = s1.clone();

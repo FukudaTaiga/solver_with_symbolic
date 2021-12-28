@@ -14,6 +14,7 @@ pub trait FunctionTerm: Debug + PartialEq + Eq + Hash + Clone {
     arg: &'a <Self::Underlying as BoolAlg>::Domain,
   ) -> &'a <Self::Underlying as BoolAlg>::Domain;
 
+  /** functional composition of self (other (x)) */
   fn compose(self, other: Self) -> Self;
 
   fn identity() -> Self;
@@ -27,7 +28,7 @@ pub enum Lambda<T: BoolAlg + ?Sized> {
   Id,
   Constant(T::Domain),
   Mapping(Vec<(T::Domain, T::Domain)>),
-  Function(Vec<(Rc<T>, T::Domain)>),
+  Function(Vec<(Box<T>, T::Domain)>),
 }
 impl<T: BoolAlg> Lambda<T> {
   pub fn constant(c: T::Domain) -> Lambda<T> {
@@ -56,7 +57,7 @@ where
         Some((_, v)) => v,
         None => arg,
       },
-      Lambda::Function(f) => match f.iter().find(|(cond, _)| cond.denotate(arg)) {
+      Lambda::Function(f) => match f.iter().find(|(cond, _)| cond.denote(arg)) {
         Some((_, value)) => value,
         None => arg,
       },
@@ -65,19 +66,19 @@ where
 
   fn compose(self, other: Self) -> Self {
     match (&self, &other) {
-      (Lambda::Id, _) => other,
       (_, Lambda::Id) => self,
-      (_, Lambda::Constant(_)) => other,
-      (Lambda::Constant(c), g) => Lambda::Constant(g.apply(c).clone()),
-      (Lambda::Mapping(map), g) => Lambda::Mapping(
+      (Lambda::Id, _) => other,
+      (Lambda::Constant(_), _) => self,
+      (f, Lambda::Constant(c)) => Lambda::Constant(f.apply(c).clone()),
+      (f, Lambda::Mapping(map)) => Lambda::Mapping(
         map
           .into_iter()
-          .map(|(k, v)| (k.clone(), g.apply(v).clone()))
+          .map(|(k, v)| (k.clone(), f.apply(v).clone()))
           .collect(),
       ),
-      (Lambda::Function(f), g) => Lambda::Function(
-        f.into_iter()
-          .map(|(phi, v)| (Rc::clone(phi), g.apply(v).clone()))
+      (f, Lambda::Function(g)) => Lambda::Function(
+        g.into_iter()
+          .map(|(phi, val)| (phi.clone(), f.apply(val).clone()))
           .collect(),
       ),
     }
@@ -149,7 +150,7 @@ pub mod tests {
 
   #[test]
   fn var_distingish_from_another() {
-    fn new() -> Rc<VariableImpl> {
+    fn new() -> VariableImpl {
       Variable::new()
     }
     let v1 = new();
