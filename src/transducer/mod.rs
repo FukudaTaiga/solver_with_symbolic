@@ -7,7 +7,7 @@ pub mod transducer;
 mod tests {
   use super::*;
   use crate::{
-    char_util::{CharWrap, FromChar},
+    util::{CharWrap, FromChar},
     regular::regex::Regex,
     state::StateMachine,
     tests::helper::*,

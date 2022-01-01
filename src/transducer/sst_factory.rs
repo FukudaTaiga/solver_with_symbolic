@@ -1,7 +1,7 @@
 use super::sst::Sst;
 use super::term::{FunctionTerm, Lambda, OutputComp, UpdateComp, Variable};
 use crate::boolean_algebra::{BoolAlg, Predicate};
-use crate::char_util::FromChar;
+use crate::util::FromChar;
 use crate::regular::{regex::Regex, symbolic_automata::Sfa};
 use crate::smt2::{ReplaceTarget, StraightLineConstraint, Transduction, TransductionOp};
 use crate::state::{State, StateMachine};
@@ -102,7 +102,6 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
       if !final_states.contains(p) {
         /* variable maps */
         let step = HashMap::from([
-          (V::clone(&res), vec![UpdateComp::X(V::clone(&res))]),
           (
             V::clone(&acc),
             vec![
@@ -253,7 +252,6 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
       if !final_states.contains(p) {
         /* variable maps */
         let update = HashMap::from([
-          (V::clone(&res), vec![UpdateComp::X(V::clone(&res))]),
           (
             V::clone(&acc),
             vec![
@@ -725,7 +723,6 @@ pub mod tests {
   #[should_panic]
   fn reject_empty_substr_reg() {
     let _rep = Builder::replace_reg(Regex::Empty, vec![]);
-
     eprintln!("unreachable");
   }
 
@@ -733,7 +730,6 @@ pub mod tests {
   #[should_panic]
   fn reject_epsilon_substr_reg() {
     let _rep = Builder::replace_reg(Regex::Epsilon, vec![]);
-
     eprintln!("unreachable");
   }
 

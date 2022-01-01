@@ -1,9 +1,9 @@
 use super::{recognizable::Recognizable, symbolic_automata::Sfa};
 use crate::{
   boolean_algebra::{BoolAlg, Predicate},
-  char_util::FromChar,
   smt2,
-  state::State,
+  state::{State, StateMachine},
+  util::FromChar,
 };
 use smt2parser::concrete::{Constant, Term};
 use std::{
@@ -11,25 +11,16 @@ use std::{
   fmt::Debug,
 };
 
-//Errors
-const NO_INPUT: &str = "Parse Error: No lefthand input found";
-//const OPERATOR_EXPECTED: &str = "Parse Error: Operator Expected";
-const NOT_ENOUGH_ARGUMENT: &str = "Parse Error:  Not enough argument of some operator";
-const INVALID_OPERATION: &str = "Unreachable: Invalid operation";
-const NO_MATCHING_BRA: &str = "Parse Error: No matching bracket '(' found";
-const NO_MATCHING_CKET: &str = "Parse Error: No matching bracket ')' found";
-const UNNECESSARY_BRACKET: &str = "Parse Error: Unnecessary brackets found";
-
-#[derive(Debug, PartialEq, Clone, std::hash::Hash, Eq)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, std::hash::Hash)]
 pub enum Regex<T: PartialOrd> {
   Empty,
   Epsilon,
   All,
   Element(T),
   Range(Option<T>, Option<T>),
-  Concat(Box<Regex<T>>, Box<Regex<T>>),
-  Or(Box<Regex<T>>, Box<Regex<T>>),
-  Inter(Box<Regex<T>>, Box<Regex<T>>),
+  Concat(Vec<Self>),
+  Or(Vec<Self>),
+  Inter(Vec<Self>),
   Star(Box<Regex<T>>),
   Not(Box<Regex<T>>),
 }
@@ -58,14 +49,37 @@ impl<T: FromChar> Regex<T> {
   }
 
   pub fn range(start: Option<char>, end: Option<char>) -> Self {
-    Regex::Range(start.map(|c| T::from_char(c)), end.map(|c| T::from_char(c)))
+    if start.is_none() && end.is_none() {
+      Regex::Empty
+    } else if start
+      .as_ref()
+      .and_then(|l| end.as_ref().and_then(|r| Some(*l == *r)))
+      .unwrap_or(false)
+    {
+      Regex::Element(T::from_char(start.unwrap()))
+    } else {
+      Regex::Range(start.map(|c| T::from_char(c)), end.map(|c| T::from_char(c)))
+    }
   }
 
   pub fn concat(self, other: Regex<T>) -> Self {
     match (self, other) {
       (Regex::Empty, _) | (_, Regex::Empty) => Regex::Empty,
       (Regex::Epsilon, r) | (r, Regex::Epsilon) => r,
-      (left, right) => Regex::Concat(Box::new(left), Box::new(right)),
+      (Regex::Concat(mut v1), Regex::Concat(mut v2)) => {
+        v1.append(&mut v2);
+        Regex::Concat(v1)
+      }
+      (r, Regex::Concat(v_)) => {
+        let mut v = vec![r];
+        v.extend(v_);
+        Regex::Concat(v)
+      }
+      (Regex::Concat(mut v), r) => {
+        v.push(r);
+        Regex::Concat(v)
+      }
+      (left, right) => Regex::Concat(vec![left, right]),
     }
   }
 
@@ -73,7 +87,29 @@ impl<T: FromChar> Regex<T> {
     match (self, other) {
       (Regex::Empty, r) | (r, Regex::Empty) => r,
       (Regex::Epsilon, Regex::Star(r)) | (Regex::Star(r), Regex::Epsilon) => Regex::Star(r),
-      (left, right) => if left == right { left } else { Regex::Or(Box::new(left), Box::new(right)) },
+      (Regex::Or(mut v1), Regex::Or(v2)) => {
+        for r in v2 {
+          if !v1.contains(&r) {
+            v1.push(r);
+          }
+        }
+        v1.sort();
+        Regex::Or(v1)
+      }
+      (Regex::Or(mut v), r) | (r, Regex::Or(mut v)) => {
+        if !v.contains(&r) {
+          v.push(r);
+          v.sort();
+        }
+        Regex::Or(v)
+      }
+      (left, right) => {
+        if left == right {
+          left
+        } else {
+          Regex::Or(vec![left, right])
+        }
+      }
     }
   }
 
@@ -85,7 +121,29 @@ impl<T: FromChar> Regex<T> {
       (Regex::Empty, _) | (_, Regex::Empty) | (Regex::Epsilon, _) | (_, Regex::Epsilon) => {
         Regex::Empty
       }
-      (left, right) => if left == right { left } else { Regex::Inter(Box::new(left), Box::new(right)) },
+      (Regex::Inter(mut v1), Regex::Inter(v2)) => {
+        for r in v2 {
+          if !v1.contains(&r) {
+            v1.push(r);
+          }
+        }
+        v1.sort();
+        Regex::Inter(v1)
+      }
+      (Regex::Inter(mut v), r) | (r, Regex::Inter(mut v)) => {
+        if !v.contains(&r) {
+          v.push(r);
+          v.sort();
+        }
+        Regex::Inter(v)
+      }
+      (left, right) => {
+        if left == right {
+          left
+        } else {
+          Regex::Inter(vec![left, right])
+        }
+      }
     }
   }
 
@@ -112,61 +170,6 @@ impl<T: FromChar> Regex<T> {
       *r
     } else {
       Regex::Not(Box::new(self))
-    }
-  }
-
-  /**
-   * identifier must be '!' or '_' \
-   * map them Empty and All
-   */
-  fn to_regex(identifier: char) -> Regex<T> {
-    match identifier {
-      '!' => Regex::Empty,
-      '_' => Regex::All,
-      _ => unreachable!(),
-    }
-  }
-
-  /**
-   * apply operator to self, if binary operator, and other \
-   * possible errors: INVALID_OPERATION
-   */
-  fn apply(self, op: char, other: Option<Regex<T>>) -> Result<Regex<T>, &'static str> {
-    match op {
-      '#' => other
-        .ok_or(INVALID_OPERATION)
-        .map(|r| Regex::Concat(Box::new(self), Box::new(r))),
-      '|' => other
-        .ok_or(INVALID_OPERATION)
-        .map(|r| Regex::Or(Box::new(self), Box::new(r))),
-      '*' => Ok(Regex::Star(Box::new(self))),
-      '~' => Ok(Regex::Not(Box::new(self))),
-      '!' => Ok(Regex::Concat(Box::new(self), Box::new(Regex::Empty))),
-      '_' => Ok(Regex::Concat(Box::new(self), Box::new(Regex::All))),
-      _ => Err(INVALID_OPERATION),
-    }
-  }
-
-  fn reduce(self) -> Regex<T> {
-    match self {
-      Regex::Concat(r1, r2) => match (r1.reduce(), r2.reduce()) {
-        (Regex::Empty, _) | (_, Regex::Empty) => Regex::Empty,
-        (Regex::Epsilon, r) | (r, Regex::Epsilon) => r,
-        (left, right) => Regex::Concat(Box::new(left), Box::new(right)),
-      },
-      Regex::Or(r1, r2) => match (r1.reduce(), r2.reduce()) {
-        (Regex::Empty, r) | (r, Regex::Empty) => r,
-        (left, right) => Regex::Or(Box::new(left), Box::new(right)),
-      },
-      Regex::Star(r) => {
-        let reg = r.reduce();
-        if let Regex::Empty = reg {
-          Regex::Epsilon
-        } else {
-          Regex::Star(Box::new(reg))
-        }
-      }
-      _ => self,
     }
   }
 
@@ -249,9 +252,21 @@ impl<T: FromChar> Regex<T> {
 
         Sfa::new(states, initial_state, final_states, transition)
       }
-      Regex::Concat(r1, r2) => r1.to_sym_fa().concat(r2.to_sym_fa()),
-      Regex::Or(r1, r2) => r1.to_sym_fa().or(r2.to_sym_fa()),
-      Regex::Inter(r1, r2) => r1.to_sym_fa().inter(r2.to_sym_fa()),
+      Regex::Concat(v) => v
+        .into_iter()
+        .map(|r| r.to_sym_fa())
+        .reduce(|res, sfa| res.concat(sfa))
+        .unwrap_or(Sfa::empty()),
+      Regex::Or(v) => v
+        .into_iter()
+        .map(|r| r.to_sym_fa())
+        .reduce(|res, sfa| res.or(sfa))
+        .unwrap_or(Sfa::empty()),
+      Regex::Inter(v) => v
+        .into_iter()
+        .map(|r| r.to_sym_fa())
+        .reduce(|res, sfa| res.inter(sfa))
+        .unwrap_or(Sfa::empty()),
       Regex::Not(r) => r.to_sym_fa().not(),
       Regex::Star(r) => r.to_sym_fa().star(),
     }
@@ -331,159 +346,9 @@ impl<T: FromChar> Regex<T> {
     }
   }
 }
-impl Regex<char> {
-  /**
-   * create new Regex from &str.
-   * possible errors: NOT_ENOUGH_ARGUMENT, NO_INPUT.
-   * mainly aime to use with test.
-   */
-  pub fn parse(input: &str) -> Result<Self, &'static str> {
-    let fragments = lexer(input)?;
-    let mut fragments = fragments.iter();
-    let mut result = match fragments.next() {
-      Some(frg) => {
-        let frg = *frg;
-
-        let head = match frg.chars().next() {
-          Some(c) => c,
-          None => return Err(NO_INPUT),
-        };
-
-        if frg.matches(is_identifier).next().is_some() && 1 < frg.len() {
-          Regex::parse(frg)?
-        } else if is_binary_operator(head) || is_mono_operator(head) {
-          return Err(NOT_ENOUGH_ARGUMENT);
-        } else if is_constant_operator(head) {
-          Regex::to_regex(head)
-        } else {
-          let mut chars = frg.chars();
-          let last_reg = match chars.next_back() {
-            Some(last) => Regex::Element(last),
-            None => unreachable!(),
-          };
-          chars.rfold(last_reg, |acc, x| {
-            Regex::Concat(Box::new(Regex::Element(x)), Box::new(acc))
-          })
-        }
-      }
-      None => return Err(NO_INPUT),
-    };
-
-    while let Some(frg) = fragments.next() {
-      let frg = *frg;
-      let head = match frg.chars().next() {
-        Some(c) => c,
-        None => return Err(NO_INPUT),
-      };
-
-      result = if frg.matches(is_identifier).next().is_some() && 1 < frg.len() {
-        result.apply('#', Some(Regex::parse(frg)?))?
-      } else if is_binary_operator(head) {
-        let next = match fragments.next() {
-          Some(n) => *n,
-          None => return Err(NOT_ENOUGH_ARGUMENT),
-        };
-        result.apply(head, Regex::parse(next).ok())?
-      } else if is_mono_operator(head) {
-        result.apply(head, None)?
-      } else if is_constant_operator(head) {
-        result.apply('#', Some(Regex::to_regex(head)))?
-      } else {
-        let mut chars = frg.chars();
-        let last_reg = match chars.next_back() {
-          Some(last) => Regex::Element(last),
-          None => unreachable!(),
-        };
-        result.apply(
-          '#',
-          Some(chars.rfold(last_reg, |acc, x| {
-            Regex::Concat(Box::new(Regex::Element(x)), Box::new(acc))
-          })),
-        )?
-      }
-    }
-
-    Ok(result.reduce())
-  }
-}
 impl Recognizable<char> for Regex<char> {
   fn member(&self, _: &[char]) -> bool {
     unimplemented!()
-  }
-}
-
-fn is_binary_operator(c: char) -> bool {
-  c == '#' || c == '|'
-}
-fn is_mono_operator(c: char) -> bool {
-  c == '*' || c == '~'
-}
-fn is_constant_operator(c: char) -> bool {
-  c == '!' || c == '_'
-}
-/**
- * '#': Concat, \
- * '|': Or, \
- * '*': Star, \
- * '~': Not, \
- * '!': Empty, \
- * '_': All,
- */
-fn is_identifier(c: char) -> bool {
-  is_binary_operator(c) || is_mono_operator(c) || is_constant_operator(c)
-}
-
-/**
- * split string with first level '(' and ')' \
- * example: "xap(cds(cdsc)cds)cdwv(dcd)cc" to [xap, cds(cdsc)cds, cdwv, dcd, cc] \
- * possible errors: NO_MATCHING_BRA, UNNECESSARY_BRACKET, NO_MATCHING_CKET
- */
-fn lexer<'a>(input: &'a str) -> Result<Vec<&'a str>, &'static str> {
-  let chars = input.chars().enumerate();
-  let mut depth = 0;
-  let mut start = 0;
-  let mut result = Vec::<&'a str>::new();
-
-  for (i, c) in chars {
-    if depth == 0 {
-      if c == '(' {
-        if start < i {
-          result.push(&input[start..i]);
-        }
-        start = i + 1;
-        depth += 1;
-      } else if c == ')' {
-        return Err(NO_MATCHING_BRA);
-      } else if is_identifier(c) {
-        if start < i {
-          result.push(&input[start..i]);
-        }
-        result.push(&input[i..(i + 1)]);
-        start = i + 1;
-      }
-    } else {
-      if c == ')' {
-        depth -= 1;
-        if depth == 0 {
-          if start == i {
-            return Err(UNNECESSARY_BRACKET);
-          }
-          result.push(&input[start..i]);
-          start = i + 1;
-        }
-      } else if c == '(' {
-        depth += 1;
-      }
-    }
-  }
-
-  if depth != 0 {
-    Err(NO_MATCHING_CKET)
-  } else {
-    if start < input.len() {
-      result.push(&input[start..]);
-    }
-    Ok(result)
   }
 }
 
@@ -491,97 +356,101 @@ fn lexer<'a>(input: &'a str) -> Result<Vec<&'a str>, &'static str> {
 mod tests {
   use super::*;
 
+  type Reg = Regex<char>;
+
   #[test]
-  fn is_identifier_test() {
-    assert!(is_identifier('|'));
-    assert!(is_identifier('*'));
-    assert!(is_identifier('!'));
-    assert!(!is_identifier('a'));
-    assert!(!is_identifier('+'));
+  fn atomics() {
+    let empty = Reg::empty();
+    assert_eq!(empty, Reg::Empty);
+
+    let eps = Reg::epsilon();
+    assert_eq!(eps, Reg::Epsilon);
+
+    let all = Reg::all();
+    assert_eq!(all, Reg::All);
+
+    let a = Reg::element('a');
+    assert_eq!(a, Reg::Element('a'));
+
+    let empty = Reg::range(None, None);
+    assert_eq!(empty, Reg::Empty);
+    let a = Reg::range(Some('a'), Some('a'));
+    assert_eq!(a, Reg::Element('a'));
+    let a_ = Reg::range(Some('a'), None);
+    assert_eq!(a_, Regex::Range(Some('a'), None));
+    let _c = Reg::range(None, Some('c'));
+    assert_eq!(_c, Regex::Range(None, Some('c')));
+    let a_c = Reg::range(Some('a'), Some('c'));
+    assert_eq!(a_c, Reg::Range(Some('a'), Some('c')));
   }
 
   #[test]
-  fn lexer_test() {
-    let input = "vfdsvfdsvfsfs";
-    assert_eq!(lexer(input), Ok(vec![input]));
-
-    let input = "xap(cds(cdsc)cds)cdwv(dcd)cc";
+  fn concat() {
+    let ab = Reg::element('a').concat(Reg::element('b'));
+    assert_eq!(ab, Reg::Concat(vec![Reg::element('a'), Reg::element('b')]));
+    let abab = ab.clone().concat(ab);
     assert_eq!(
-      lexer(input),
-      Ok(vec!["xap", "cds(cdsc)cds", "cdwv", "dcd", "cc"])
+      abab,
+      Reg::Concat(vec![
+        Reg::element('a'),
+        Reg::element('b'),
+        Reg::element('a'),
+        Reg::element('b')
+      ])
     );
 
-    let input = "()";
-    assert_eq!(lexer(input), Err(UNNECESSARY_BRACKET));
+    let seq = Reg::seq("abab");
+    assert_eq!(seq, abab);
+  }
 
-    let input = "(avcds(cdscds)cddd";
-    assert_eq!(lexer(input), Err(NO_MATCHING_CKET));
-
-    let input = "(cdscds)dsc)cdcd(cdscds)cd";
-    assert_eq!(lexer(input), Err(NO_MATCHING_BRA));
-
-    let input = "(aa*a|a~)*v!*c(d|b)dd!";
+  #[test]
+  fn or() {
+    let ab = Reg::element('a').or(Reg::element('b'));
+    assert_eq!(ab, Reg::Or(vec![Reg::element('a'), Reg::element('b')]));
+    let ab = ab.clone().or(ab);
+    assert_eq!(ab, Reg::Or(vec![Reg::element('a'), Reg::element('b')]));
+    let abc = ab.or(Reg::element('c'));
     assert_eq!(
-      lexer(input),
-      Ok(vec!["aa*a|a~", "*", "v", "!", "*", "c", "d|b", "dd", "!"])
+      abc,
+      Reg::Or(vec![
+        Reg::element('a'),
+        Reg::element('b'),
+        Reg::element('c')
+      ])
     );
   }
 
   #[test]
-  fn parse_element() {
-    let a = Regex::Element('a');
-    assert_eq!(Regex::parse("a"), Ok(a));
-  }
-
-  #[test]
-  fn parse_concat() {
-    let a = Regex::Element('a');
-    let a = Box::new(a);
-    let b = Box::new(Regex::Element('b'));
-    let c = Box::new(Regex::Element('c'));
-    let bc = Box::new(Regex::Concat(b, c));
-    let abc = Regex::Concat(a, bc);
-    assert_eq!(Regex::parse("abc"), Ok(abc));
-  }
-
-  #[test]
-  fn parse_or() {
-    let a = Box::new(Regex::Element('a'));
-    let b = Box::new(Regex::Element('b'));
-    let a_or_b = Regex::Or(a, b);
-    assert_eq!(Regex::parse("a|b"), Ok(a_or_b));
-  }
-
-  #[test]
-  fn parse_star() {
-    let a = Box::new(Regex::Element('a'));
-    let a_star = Regex::Star(a);
-    assert_eq!(Regex::parse("a*"), Ok(a_star));
-
-    let b_star_a = Regex::Concat(
-      Box::new(Regex::Star(Box::new(Regex::Element('b')))),
-      Box::new(Regex::Element('a')),
-    );
-    assert_eq!(Regex::parse("b*a"), Ok(b_star_a));
-  }
-
-  #[test]
-  fn parse_empty_and_epsilon() {
-    assert_eq!(Regex::parse("!"), Ok(Regex::Empty));
-    assert_eq!(Regex::parse("!*"), Ok(Regex::Epsilon));
-  }
-
-  #[test]
-  fn parse() {
+  fn inter() {
+    let ab = Reg::element('a').inter(Reg::element('b'));
+    assert_eq!(ab, Reg::Inter(vec![Reg::element('a'), Reg::element('b')]));
+    let ab = ab.clone().inter(ab);
+    assert_eq!(ab, Reg::Inter(vec![Reg::element('a'), Reg::element('b')]));
+    let abc = ab.inter(Reg::element('c'));
     assert_eq!(
-      Regex::parse("a((b|d)*)|!"),
-      Ok(Regex::Concat(
-        Box::new(Regex::Element('a')),
-        Box::new(Regex::Star(Box::new(Regex::Or(
-          Box::new(Regex::Element('b')),
-          Box::new(Regex::Element('d'))
-        ))))
-      ))
-    )
+      abc,
+      Reg::Inter(vec![
+        Reg::element('a'),
+        Reg::element('b'),
+        Reg::element('c')
+      ])
+    );
+  }
+
+  #[test]
+  fn not() {
+    let a = Reg::element('a');
+    let not_a = a.clone().not();
+    assert_eq!(not_a, Reg::Not(Box::new(a)));
+  }
+
+  #[test]
+  fn star() {
+    let abc = Reg::seq("abc");
+    let star = abc.clone().star();
+    assert_eq!(star, Reg::Star(Box::new(abc.clone())));
+
+    let plus = abc.clone().plus();
+    assert_eq!(plus, abc.concat(star));
   }
 }

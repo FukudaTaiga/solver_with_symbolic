@@ -1,16 +1,14 @@
 mod boolean_algebra;
-mod char_util;
+mod util;
 pub mod regular;
 pub mod smt2;
 mod state;
 pub mod transducer;
 
-use char_util::CharWrap;
+use util::{CharWrap};
 use smt2::Smt2;
 use state::StateImpl;
 use std::{env, fs::File, io::Read, rc::Rc};
-
-pub use regular::symbolic_automata::dummy;
 
 pub fn run() {
   let mut args = env::args();
@@ -39,7 +37,7 @@ mod tests {
 
   pub mod helper {
     use super::*;
-    use char_util::FromChar;
+    use util::FromChar;
     pub use state::StateImpl;
     use transducer::term::OutputComp;
     pub use transducer::term::VariableImpl;

@@ -2,13 +2,14 @@ use std::{
   collections::{HashMap, HashSet},
   fmt::Debug,
   hash::Hash,
+  iter::FromIterator,
   rc::Rc,
   sync::atomic::{AtomicUsize, Ordering},
 };
 
 static STATE_CNT: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Debug, PartialEq, Hash, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone)]
 pub struct StateImpl(usize);
 impl StateImpl {
   pub fn new() -> StateImpl {
@@ -16,7 +17,7 @@ impl StateImpl {
   }
 }
 
-pub trait State: Debug + PartialEq + Eq + Hash + Clone {
+pub trait State: Debug + Eq + Ord + Hash + Clone {
   fn new() -> Self;
 }
 impl State for StateImpl {
@@ -30,6 +31,7 @@ impl State for Rc<StateImpl> {
   }
 }
 
+/** https://github.com/rust-lang/rfcs/blob/master/text/1210-impl-specialization.md */
 pub trait ToState {
   type Target: State;
 
@@ -58,9 +60,8 @@ pub trait StateMachine: Sized {
   type BoolAlg: BoolAlg;
 
   /** Target of the transition */
-  type Target: Clone + ToState<Target = Self::StateType>;
+  type Target: ToState<Target = Self::StateType> + Clone;
 
-  /** Determinizer of Output */
   type FinalState: ToState<Target = Self::StateType> + Clone;
   /*
    * https://stackoverflow.com/questions/50090578/how-to-write-a-trait-bound-for-a-reference-to-an-associated-type-on-the-trait-it
@@ -69,11 +70,12 @@ pub trait StateMachine: Sized {
    * i.e.
    *  wanted: filter and clone items -> collect
    *  current impl: clone -> filter -> collect
-   * still solutions are still open or unstable.
+   * solutions are still open or unstable.
    */
-  type FinalSet: Clone
-    + IntoIterator<Item = Self::FinalState>
-    + std::iter::FromIterator<Self::FinalState>;
+  /** Determinizer of Output */
+  type FinalSet: Clone + IntoIterator<Item = Self::FinalState> + FromIterator<Self::FinalState>;
+
+  fn empty() -> Self;
 
   fn states(&self) -> &HashSet<Self::StateType>;
   fn states_mut(&mut self) -> &mut HashSet<Self::StateType>;
@@ -95,13 +97,11 @@ pub trait StateMachine: Sized {
       reachables.push(state.clone());
 
       for ((s, phi), target) in self.transition() {
-        for t in target {
-          if s == state
-            && !reachables.contains(t.to_state())
-            && !stack.contains(&t.to_state())
-            && phi.satisfiable()
-          {
-            stack.push(t.to_state());
+        if s == state && phi.satisfiable() {
+          for t in target {
+            if !reachables.contains(t.to_state()) && !stack.contains(&t.to_state()) {
+              stack.push(t.to_state());
+            }
           }
         }
       }
@@ -112,16 +112,19 @@ pub trait StateMachine: Sized {
       .transition()
       .iter()
       .filter_map(|((s, phi), target)| {
-        if self.states().contains(s) {
-          let target: Vec<_> = target
-            .into_iter()
-            .filter(|t| self.states().contains(t.to_state()))
-            .cloned()
-            .collect();
-          (target.len() != 0).then(|| ((s.clone(), phi.clone()), target))
-        } else {
-          None
-        }
+        self
+          .states()
+          .contains(s)
+          .then(|| {
+            target
+              .into_iter()
+              .filter(|t| self.states().contains(t.to_state()))
+              .cloned()
+              .collect::<Vec<_>>()
+          })
+          .and_then(|target| {
+            (target.len() != 0 && phi.satisfiable()).then(|| ((s.clone(), phi.clone()), target))
+          })
       })
       .collect();
     let mut stack = vec![];
@@ -144,41 +147,33 @@ pub trait StateMachine: Sized {
     while let Some(state) = stack.pop() {
       reachables.push(state.clone());
 
-      for ((s, phi), target) in self.transition() {
+      for ((s, _), target) in self.transition() {
         for t in target {
-          if *t.to_state() == state
-            && !reachables.contains(s)
-            && !stack.contains(s)
-            && phi.satisfiable()
-          {
+          if *t.to_state() == state && !reachables.contains(s) && !stack.contains(s) {
             stack.push(s.clone());
           }
         }
       }
     }
 
-    /*
-     * this code may not be necessary,
-     * but some method will panic if no state exists like sfa.inter()
-     * hopefully such function would check if the operation can be done.
-     */
-    reachables.push(self.initial_state().clone());
-
     *self.states_mut() = reachables.into_iter().collect();
     *self.transition_mut() = self
       .transition()
       .iter()
       .filter_map(|((s, phi), target)| {
-        if self.states().contains(s) {
-          let target: Vec<_> = target
-            .into_iter()
-            .filter(|t| self.states().contains(t.to_state()))
-            .cloned()
-            .collect();
-          (target.len() != 0).then(|| ((s.clone(), phi.clone()), target))
-        } else {
-          None
-        }
+        self
+          .states()
+          .contains(s)
+          .then(|| {
+            target
+              .into_iter()
+              .filter(|t| self.states().contains(t.to_state()))
+              .cloned()
+              .collect::<Vec<_>>()
+          })
+          .and_then(|target| {
+            (target.len() != 0 && phi.satisfiable()).then(|| ((s.clone(), phi.clone()), target))
+          })
       })
       .collect();
     *self.final_set_mut() = self
@@ -188,12 +183,46 @@ pub trait StateMachine: Sized {
       .filter(|s| self.states().contains(s.to_state()))
       .collect();
 
-    self
+    if self.states().is_empty() {
+      Self::empty()
+    } else {
+      self
+    }
   }
 
-  fn step<Next, F>(&self, possibilities: Vec<Next>, filter_map: &impl Fn(Next) -> F) -> Vec<Next>
+  fn back<Next, F>(&self, possibilities: Vec<Next>, filter_map: impl Fn(Next) -> F) -> Vec<Next>
   where
-    F: FnMut((&(Self::StateType, Self::BoolAlg), &Self::Target)) -> Option<Next>,
+    Next: ToState<Target = Self::StateType> + Clone,
+    F: FnMut(&(Self::StateType, Self::BoolAlg)) -> Option<Next>,
+  {
+    possibilities
+      .into_iter()
+      .flat_map(|curr| {
+        let mut fm = filter_map(curr.clone());
+        self
+          .transition()
+          .iter()
+          .filter_map(move |(source, target)| {
+            target
+              .into_iter()
+              .filter(|t| *t.to_state() == *curr.to_state())
+              .next()
+              .is_some()
+              .then(|| fm(source))
+              .flatten()
+          })
+          .collect::<Vec<_>>()
+      })
+      .collect()
+  }
+
+  fn step<'a, Next, F>(
+    &'a self,
+    possibilities: Vec<Next>,
+    filter_map: impl Fn(Next) -> F,
+  ) -> Vec<Next>
+  where
+    F: FnMut((&'a (Self::StateType, Self::BoolAlg), &'a Self::Target)) -> Option<Next>,
   {
     possibilities
       .into_iter()
@@ -211,7 +240,7 @@ pub trait StateMachine: Sized {
 
   fn generalized_run<'a, Next, F, Output>(
     &self,
-    input: impl IntoIterator<Item = &'a <Self::BoolAlg as BoolAlg>::Domain>,
+    input: impl Iterator<Item = &'a <Self::BoolAlg as BoolAlg>::Domain>,
     initial_possibilities: Vec<Next>,
     step_func: &mut F,
     output_func: impl Fn(Vec<Next>) -> Output,
@@ -224,12 +253,12 @@ pub trait StateMachine: Sized {
     let mut possibilities = initial_possibilities;
 
     for c in input {
-      let mut possibilities_ = possibilities.clone();
+      let possibilities_ = possibilities.clone();
       possibilities.clear();
 
-      for curr in possibilities_.drain(..) {
+      for curr in possibilities_ {
         for (source, target) in self.transition() {
-          if &source.0 == curr.to_state() && source.1.denote(c) {
+          if source.0 == *curr.to_state() && source.1.denote(c) {
             for t in target {
               possibilities.push(step_func(&curr, c, t));
             }
@@ -240,6 +269,44 @@ pub trait StateMachine: Sized {
 
     output_func(possibilities)
   }
+}
+
+pub mod macros {
+  macro_rules! impl_state_machine {
+    ( $states:ident, $initial_state:ident, $final_set:ident, $transition:ident ) => {
+      fn states(&self) -> &HashSet<Self::StateType> {
+        &self.$states
+      }
+      fn states_mut(&mut self) -> &mut HashSet<Self::StateType> {
+        &mut self.$states
+      }
+    
+      fn initial_state(&self) -> &Self::StateType {
+        &self.$initial_state
+      }
+      fn initial_state_mut(&mut self) -> &mut Self::StateType {
+        &mut self.$initial_state
+      }
+    
+      fn final_set(&self) -> &Self::FinalSet {
+        &self.$final_set
+      }
+      fn final_set_mut(&mut self) -> &mut Self::FinalSet {
+        &mut self.$final_set
+      }
+    
+      fn transition(&self) -> &HashMap<(Self::StateType, Self::BoolAlg), Vec<Self::Target>> {
+        &self.$transition
+      }
+      fn transition_mut(
+        &mut self,
+      ) -> &mut HashMap<(Self::StateType, Self::BoolAlg), Vec<Self::Target>> {
+        &mut self.$transition
+      }
+    };
+  }
+
+  pub(crate) use impl_state_machine;
 }
 
 #[cfg(test)]
@@ -262,15 +329,16 @@ pub mod tests {
 
   #[test]
   fn state_distingish_from_another() {
-    fn new() -> Rc<StateImpl> {
+    fn new() -> StateImpl {
       State::new()
     }
+
     let s1 = new();
     let s2 = new();
     let s3 = s1.clone();
 
     assert_ne!(s1, s2);
-    assert!(s1 == s3 && s1.0 == s3.0);
+    assert_eq!(s1, s3);
 
     let s1_hash = {
       let mut hasher = DefaultHasher::new();

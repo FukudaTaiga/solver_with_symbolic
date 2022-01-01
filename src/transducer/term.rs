@@ -1,4 +1,5 @@
 use crate::boolean_algebra::{BoolAlg, Predicate};
+use crate::util::FromChar;
 use std::{
   fmt::Debug,
   hash::Hash,
@@ -6,50 +7,52 @@ use std::{
   sync::atomic::{AtomicUsize, Ordering},
 };
 
-pub trait FunctionTerm: Debug + PartialEq + Eq + Hash + Clone {
-  type Underlying: BoolAlg;
+pub trait FunctionTerm: Debug + Eq + Hash + Clone {
+  type Domain: FromChar;
+
+  fn identity() -> Self;
 
   fn apply<'a>(
     &'a self,
-    arg: &'a <Self::Underlying as BoolAlg>::Domain,
-  ) -> &'a <Self::Underlying as BoolAlg>::Domain;
+    arg: &'a Self::Domain,
+  ) -> &'a Self::Domain;
 
   /** functional composition of self (other (x)) */
   fn compose(self, other: Self) -> Self;
-
-  fn identity() -> Self;
 }
 
-/**
- * for Primitive Function Term
- */
+/** for Primitive Function Term */
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub enum Lambda<T: BoolAlg + ?Sized> {
+pub enum Lambda<B: BoolAlg + ?Sized> {
   Id,
-  Constant(T::Domain),
-  Mapping(Vec<(T::Domain, T::Domain)>),
-  Function(Vec<(Box<T>, T::Domain)>),
+  Constant(B::Domain),
+  Mapping(Vec<(B::Domain, B::Domain)>),
+  Function(Vec<(Box<B>, B::Domain)>),
 }
-impl<T: BoolAlg> Lambda<T> {
-  pub fn constant(c: T::Domain) -> Lambda<T> {
+impl<B: BoolAlg> Lambda<B> {
+  pub fn constant(c: B::Domain) -> Lambda<B> {
     Lambda::Constant(c)
   }
 
-  pub fn mapping(m: Vec<(T::Domain, T::Domain)>) -> Lambda<T> {
+  pub fn mapping(m: Vec<(B::Domain, B::Domain)>) -> Lambda<B> {
     Lambda::Mapping(m)
   }
 }
-impl<T> FunctionTerm for Lambda<T>
+impl<B> FunctionTerm for Lambda<B>
 where
-  T: BoolAlg,
-  T::Domain: Clone + Eq,
+  B: BoolAlg,
+  B::Domain: Clone + Eq,
 {
-  type Underlying = T;
+  type Domain = B::Domain;
+
+  fn identity() -> Self {
+    Lambda::Id
+  }
 
   fn apply<'a>(
     &'a self,
-    arg: &'a <Self::Underlying as BoolAlg>::Domain,
-  ) -> &'a <Self::Underlying as BoolAlg>::Domain {
+    arg: &'a Self::Domain,
+  ) -> &'a Self::Domain {
     match self {
       Lambda::Id => arg,
       Lambda::Constant(c) => c,
@@ -83,15 +86,11 @@ where
       ),
     }
   }
-
-  fn identity() -> Self {
-    Lambda::Id
-  }
 }
 
 static VAR_CNT: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub struct VariableImpl(usize);
 impl VariableImpl {
   pub fn new() -> VariableImpl {
@@ -99,7 +98,7 @@ impl VariableImpl {
   }
 }
 
-pub trait Variable: Debug + Eq + Hash + Clone {
+pub trait Variable: Debug + Eq + Ord + Hash + Clone {
   fn new() -> Self;
 }
 impl Variable for VariableImpl {
@@ -114,8 +113,8 @@ impl Variable for Rc<VariableImpl> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum UpdateComp<T: FunctionTerm, V: Variable> {
-  F(T),
+pub enum UpdateComp<F: FunctionTerm, V: Variable> {
+  F(F),
   X(V),
 }
 

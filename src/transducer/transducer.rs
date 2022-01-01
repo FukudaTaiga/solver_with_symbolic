@@ -1,41 +1,42 @@
 use super::term::{FunctionTerm, FunctionTermImpl};
 use crate::{
-  boolean_algebra::BoolAlg,
-  state::{State, StateMachine},
+  boolean_algebra::{BoolAlg, Predicate},
+  state::{State, StateMachine, self},
+  util::FromChar
 };
 use std::{
   collections::{HashMap, HashSet},
   fmt::Debug,
 };
 
-type Domain<F> = <<F as FunctionTerm>::Underlying as BoolAlg>::Domain;
-type Source<F, S> = (S, <F as FunctionTerm>::Underlying);
+type Source<B, S> = (S, B);
 type Target<F, S> = (S, Vec<F>);
 
-/**
- * implementation of symbolic finite state transducer (SFST)
- */
+/** implementation of symbolic finite state transducer (SFST) */
 #[derive(Debug, PartialEq, Clone)]
-pub struct SymFST<F, S>
+pub struct SymFST<D, B, F, S>
 where
-  F: FunctionTerm,
+  B: BoolAlg<Domain = D>,
+  F: FunctionTerm<Domain = D>,
   S: State,
 {
   states: HashSet<S>,
   initial_state: S,
   final_states: HashSet<S>,
-  transition: HashMap<Source<F, S>, Vec<Target<F, S>>>,
+  transition: HashMap<Source<B, S>, Vec<Target<F, S>>>,
 }
-impl<F, S> SymFST<F, S>
+impl<D, B, F, S> SymFST<D, B, F, S>
 where
-  F: FunctionTerm + Clone,
+  D: FromChar,
+  B: BoolAlg<Domain = D>,
+  F: FunctionTerm<Domain = D>,
   S: State,
 {
   pub fn new(
     states: HashSet<S>,
     initial_state: S,
     final_states: HashSet<S>,
-    transition: HashMap<Source<F, S>, Vec<Target<F, S>>>,
+    transition: HashMap<Source<B, S>, Vec<Target<F, S>>>,
   ) -> Self {
     Self {
       states,
@@ -46,16 +47,16 @@ where
     .minimize()
   }
 
-  pub fn run<'a>(&self, input: impl IntoIterator<Item = &'a Domain<F>>) -> Vec<Vec<Domain<F>>>
+  pub fn run<'a>(&self, input: impl IntoIterator<Item = &'a D>) -> Vec<Vec<D>>
   where
-    Domain<F>: 'a,
+    D: 'a,
   {
     self.generalized_run(
-      input,
+      input.into_iter(),
       vec![(self.initial_state.clone(), vec![])],
       &mut |(_, w), c, (q, map)| {
         let mut w = w.clone();
-        w.extend(map.into_iter().map(|f| Domain::<F>::clone(f.apply(c))));
+        w.extend(map.into_iter().map(|f| D::clone(f.apply(c))));
         (S::clone(q), w)
       },
       |possibilities| {
@@ -67,47 +68,31 @@ where
     )
   }
 }
-impl<F, S> StateMachine for SymFST<F, S>
+impl<D, B, F, S> StateMachine for SymFST<D, B, F, S>
 where
-  F: FunctionTerm,
+  D: FromChar,
+  B: BoolAlg<Domain = D>,
+  F: FunctionTerm<Domain = D>,
   S: State,
 {
   type StateType = S;
 
-  type BoolAlg = F::Underlying;
+  type BoolAlg = B;
   type Target = Target<F, S>;
   type FinalState = S;
   type FinalSet = HashSet<S>;
 
-  fn states(&self) -> &HashSet<Self::StateType> {
-    &self.states
-  }
-  fn states_mut(&mut self) -> &mut HashSet<Self::StateType> {
-    &mut self.states
-  }
-
-  fn initial_state(&self) -> &Self::StateType {
-    &self.initial_state
-  }
-  fn initial_state_mut(&mut self) -> &mut Self::StateType {
-    &mut self.initial_state
+  fn empty() -> Self {
+    let state = S::new();
+    Self {
+      states: HashSet::from([S::clone(&state)]),
+      initial_state: state,
+      final_states: HashSet::new(),
+      transition: HashMap::new(),
+    }
   }
 
-  fn final_set(&self) -> &Self::FinalSet {
-    &self.final_states
-  }
-  fn final_set_mut(&mut self) -> &mut Self::FinalSet {
-    &mut self.final_states
-  }
-
-  fn transition(&self) -> &HashMap<(Self::StateType, Self::BoolAlg), Vec<Self::Target>> {
-    &self.transition
-  }
-  fn transition_mut(
-    &mut self,
-  ) -> &mut HashMap<(Self::StateType, Self::BoolAlg), Vec<Self::Target>> {
-    &mut self.transition
-  }
+  state::macros::impl_state_machine!(states, initial_state, final_states, transition);
 }
 
-pub type Transducer<T, S> = SymFST<FunctionTermImpl<T>, S>;
+pub type Transducer<T, S> = SymFST<T, Predicate<T>, FunctionTermImpl<T>, S>;

@@ -1,5 +1,5 @@
-use crate::char_util::FromChar;
 use crate::transducer::term::{FunctionTerm, Lambda};
+use crate::util::FromChar;
 use std::{fmt::Debug, hash::Hash};
 
 /** express effective Boolean Algebra A, tuple of (D, Phi, [], top, bot, and, or, not) \
@@ -12,21 +12,35 @@ use std::{fmt::Debug, hash::Hash};
  * or: [p or q] -> [p] || [q]
  * not: [not p] -> D \ [p]
  */
-pub trait BoolAlg: Debug + PartialEq + Eq + Hash + Clone {
+pub trait BoolAlg: Debug + Eq + Hash + Clone {
   type Domain: FromChar;
-  type Term: FunctionTerm<Underlying = Self>;
+  type Term: FunctionTerm<Domain = Self::Domain>;
 
+  /**
+   * predicate that equals x == a.
+   * it names `char` because
+   * `eq` is already defined in trait PartialEq
+   * and the name like it is confusing.
+   */
   fn char(a: Self::Domain) -> Self;
-  fn and(self: &Self, other: &Self) -> Self;
-  fn or(self: &Self, other: &Self) -> Self;
-  fn not(self: &Self) -> Self;
+  fn and(&self, other: &Self) -> Self;
+  fn or(&self, other: &Self) -> Self;
+  fn not(&self) -> Self;
   fn top() -> Self;
   fn bot() -> Self;
-  fn with_lambda(&self, f: Self::Term) -> Self;
+  fn with_lambda(&self, f: &Self::Term) -> Self;
 
   fn all_char() -> Self {
     //Self::char(Self::Domain::separator()).not()
     Self::top()
+  }
+
+  fn boolean(b: bool) -> Self {
+    if b {
+      Self::top()
+    } else {
+      Self::bot()
+    }
   }
 
   /** apply argument to self and return the result */
@@ -34,10 +48,63 @@ pub trait BoolAlg: Debug + PartialEq + Eq + Hash + Clone {
 
   fn satisfiable(&self) -> bool;
 }
+/** Boolean Algebra with epsilon */
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct WithEps<B: BoolAlg>(Option<B>);
+impl<B: BoolAlg> WithEps<B> {
+  pub fn is_eps(&self) -> bool {
+    self.0.is_none()
+  }
+}
+impl<B: BoolAlg> BoolAlg for WithEps<B> {
+  type Domain = B::Domain;
+  type Term = B::Term;
 
-/**
- * for Primitive Predicate
- */
+  fn char(a: Self::Domain) -> Self {
+    WithEps(Some(B::char(a)))
+  }
+  fn and(&self, other: &Self) -> Self {
+    WithEps(
+      self
+        .0
+        .as_ref()
+        .and_then(|p1| other.0.as_ref().map(|p2| p1.and(p2)))
+        .or(Some(B::bot())),
+    )
+  }
+  fn or(&self, other: &Self) -> Self {
+    WithEps(
+      self
+        .0
+        .as_ref()
+        .and_then(|p1| other.0.as_ref().map(|p2| p1.or(p2)))
+        .or(Some(B::bot())),
+    )
+  }
+  fn not(&self) -> Self {
+    WithEps(self.0.as_ref().map(|p| p.not()))
+  }
+  fn top() -> Self {
+    WithEps(Some(B::top()))
+  }
+  fn bot() -> Self {
+    WithEps(Some(B::bot()))
+  }
+  fn with_lambda(&self, f: &Self::Term) -> Self {
+    WithEps(self.0.as_ref().map(|p| p.with_lambda(f)))
+  }
+
+  /** apply argument to self and return the result */
+  fn denote(&self, arg: &Self::Domain) -> bool {
+    self.0.as_ref().map_or_else(|| true, |p| p.denote(arg))
+  }
+
+  fn satisfiable(&self) -> bool {
+    self.0.as_ref().map_or_else(|| true, |p| p.satisfiable())
+  }
+}
+
+/** for Primitive Predicate */
 #[derive(Debug, Eq, Hash, Clone)]
 pub enum Predicate<T: FromChar> {
   Bool(bool),
@@ -103,13 +170,20 @@ impl<T: FromChar> Predicate<T> {
     }
   }
 
-  pub fn in_set(elements: &[T]) -> Self {
-    if elements.len() == 0 {
+  pub fn in_set(elements: impl IntoIterator<Item = T>) -> Self {
+    let mut elements = elements.into_iter();
+    let mut els = vec![];
+
+    while let Some(e) = elements.next() {
+      els.push(e);
+    }
+
+    if els.len() == 0 {
       Predicate::bot()
-    } else if elements.len() == 1 {
-      Predicate::char(elements[0].clone())
+    } else if els.len() == 1 {
+      Predicate::char(els.pop().unwrap())
     } else {
-      Predicate::InSet(Vec::from(elements))
+      Predicate::InSet(els)
     }
   }
 }
@@ -147,76 +221,21 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
           right: qr,
         },
       ) => {
-        /* reduce if two range have common area. */
-        match (pl, pr, ql, qr) {
-          /* q is of the form |ql\_______/qr| */
-          (Some(pl), Some(pr), Some(ql), Some(qr)) if *ql <= *pr && *pl <= *qr => {
-            if *ql < *pl {
-              if *qr < *pr {
-                /* ql\__pl\_result_/qr__/pr */
-                Predicate::range(Some(pl.clone()), Some(qr.clone()))
-              } else {
-                /* ql\__pl\_result_/pr__qr */
-                self.clone()
-              }
-            } else {
-              if *qr <= *pr {
-                /* pl\__ql\_result_/qr__/pr */
-                other.clone()
-              } else {
-                /* pl\__ql\_result_/pr__/qr */
-                Predicate::range(Some(ql.clone()), Some(pr.clone()))
-              }
-            }
-          }
-          (Some(pl), None, Some(ql), Some(qr)) if *pl <= *qr => {
-            if *pl <= *ql {
-              other.clone()
-            } else {
-              Predicate::range(Some(pl.clone()), Some(qr.clone()))
-            }
-          }
-          (None, Some(pr), Some(ql), Some(qr)) if *ql <= *pr => {
-            if *qr <= *pr {
-              other.clone()
-            } else {
-              Predicate::range(Some(ql.clone()), Some(pr.clone()))
-            }
-          }
-          /* q is of the form |_______/qr| */
-          (Some(pl), Some(pr), None, Some(qr)) if *pl <= *qr => {
-            if *pr <= *qr {
-              self.clone()
-            } else {
-              Predicate::range(Some(pl.clone()), Some(qr.clone()))
-            }
-          }
-          (Some(pl), None, None, Some(qr)) => Predicate::range(Some(pl.clone()), Some(qr.clone())),
-          (None, Some(pr), None, Some(qr)) => {
-            if *qr <= *pr {
-              other.clone()
-            } else {
-              self.clone()
-            }
-          }
-          /* q is of the form |ql\_______| */
-          (Some(pl), Some(pr), Some(ql), None) if *ql <= *pr => {
-            if *ql <= *pl {
-              self.clone()
-            } else {
-              Predicate::range(Some(ql.clone()), Some(pr.clone()))
-            }
-          }
-          (Some(pl), None, Some(ql), None) => {
-            if *pl <= *ql {
-              other.clone()
-            } else {
-              self.clone()
-            }
-          }
-          (None, Some(pr), Some(ql), None) => Predicate::range(Some(ql.clone()), Some(pr.clone())),
-          _ => Predicate::bot(),
-        }
+        let pl = pl.as_ref();
+        let ql = ql.as_ref();
+        let pr = pr.as_ref();
+        let qr = qr.as_ref();
+
+        let left = pl.map_or_else(
+          || ql,
+          |pl| ql.map_or_else(|| Some(pl), |ql| Some(pl.max(ql))),
+        );
+        let right = pr.map_or_else(
+          || qr,
+          |pr| qr.map_or_else(|| Some(pr), |qr| Some(pr.min(qr))),
+        );
+
+        Predicate::range(left.cloned(), right.cloned())
       }
       (Predicate::InSet(els), p) | (p, Predicate::InSet(els)) => {
         let els_ = els
@@ -227,10 +246,10 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
         if els_.len() == 0 {
           Predicate::bot()
         } else {
-          Predicate::in_set(&els_)
+          Predicate::in_set(els_)
         }
       }
-      (Predicate::Not(p), q) | (q, Predicate::Not(p)) if *q == **p => Predicate::bot(),
+      (Predicate::Not(p), q) | (q, Predicate::Not(p)) if **p == *q => Predicate::bot(),
       (Predicate::Not(p1), Predicate::Not(p2)) => Predicate::Not(Box::new(p1.or(p2))),
       (p, q) => {
         if *p == *q {
@@ -252,11 +271,11 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
         }
       }
       (Predicate::Eq(c), p) | (p, Predicate::Eq(c)) if p.denote(c) => p.clone(),
-      (Predicate::Eq(c1), Predicate::Eq(c2)) => Predicate::in_set(&[c1.clone(), c2.clone()]),
+      (Predicate::Eq(c1), Predicate::Eq(c2)) => Predicate::in_set([c1.clone(), c2.clone()]),
       (Predicate::Eq(c), Predicate::InSet(els)) | (Predicate::InSet(els), Predicate::Eq(c)) => {
         let mut els_ = els.clone();
         els_.push(c.clone());
-        Predicate::in_set(&els_)
+        Predicate::in_set(els_)
       }
       (
         Predicate::Range {
@@ -268,80 +287,24 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
           right: qr,
         },
       ) => {
-        /* reduce if one range surrounds other. */
-        match (pl, pr, ql, qr) {
-          /* q is of the form |ql\_______/qr| */
-          (Some(pl), Some(pr), Some(ql), Some(qr)) if *ql <= *pr && *pl <= *qr => {
-            if *ql <= *pl {
-              if *pr <= *qr {
-                /* ql\__pl\______/pr__/qr */
-                other.clone()
-              } else {
-                /* ql\__pl\_______/qr__/pr */
-                Predicate::range(Some(ql.clone()), Some(pr.clone()))
-              }
-            } else {
-              if *qr <= *pr {
-                /* pl\__ql\_______/qr__/pr */
-                self.clone()
-              } else {
-                /* pl\__ql\______/pr__/qr */
-                Predicate::range(Some(pl.clone()), Some(qr.clone()))
-              }
-            }
-          }
-          (Some(pl), None, Some(ql), Some(qr)) if *pl <= *qr => {
-            if *pl <= *ql {
-              self.clone()
-            } else {
-              Predicate::range(Some(ql.clone()), None)
-            }
-          }
-          (None, Some(pr), Some(ql), Some(qr)) if *ql <= *pr => {
-            if *qr <= *pr {
-              self.clone()
-            } else {
-              Predicate::range(None, Some(qr.clone()))
-            }
-          }
-          /* q is of the form |_______/qr| */
-          (Some(pl), Some(pr), None, Some(qr)) if *pl <= *qr => {
-            if *pr <= *qr {
-              other.clone()
-            } else {
-              Predicate::range(None, Some(pr.clone()))
-            }
-          }
-          (Some(pl), None, None, Some(qr)) if *pl <= *qr => Predicate::top(),
-          (None, Some(pr), None, Some(qr)) => {
-            if *qr <= *pr {
-              self.clone()
-            } else {
-              other.clone()
-            }
-          }
-          /* q is of the form |ql\_______| */
-          (Some(pl), Some(pr), Some(ql), None) if *ql <= *pr => {
-            if *ql <= *pl {
-              other.clone()
-            } else {
-              Predicate::range(Some(pl.clone()), None)
-            }
-          }
-          (Some(pl), None, Some(ql), None) => {
-            if *pl <= *ql {
-              self.clone()
-            } else {
-              other.clone()
-            }
-          }
-          (None, Some(pr), Some(ql), None) if *ql <= *pr => Predicate::top(),
-          _ => Predicate::Or(Box::new(self.clone()), Box::new(other.clone())),
+        if matches!((pl, qr), (Some(l), Some(r)) if l <= r)
+          || matches!((ql, pr), (Some(l), Some(r)) if l <= r)
+        {
+          let pl = pl.as_ref();
+          let ql = ql.as_ref();
+          let pr = pr.as_ref();
+          let qr = qr.as_ref();
+
+          let left = pl.and_then(|pl| ql.map(|ql| pl.min(ql)));
+          let right = pr.and_then(|pr| qr.map(|qr| pr.max(qr)));
+          Predicate::range(left.cloned(), right.cloned())
+        } else {
+          Predicate::Or(Box::new(self.clone()), Box::new(other.clone()))
         }
       }
       (Predicate::InSet(els1), Predicate::InSet(els2)) => {
         let els: std::collections::HashSet<_> = els1.into_iter().chain(els2.into_iter()).collect();
-        Predicate::in_set(&els.into_iter().cloned().collect::<Vec<_>>())
+        Predicate::in_set(els.into_iter().cloned())
       }
       (Predicate::InSet(els), p) | (p, Predicate::InSet(els)) => {
         let els_ = els
@@ -352,7 +315,7 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
         if els_.len() == 0 {
           p.clone()
         } else {
-          Predicate::Or(Box::new(Predicate::in_set(&els_)), Box::new(p.clone()))
+          Predicate::Or(Box::new(Predicate::in_set(els_)), Box::new(p.clone()))
         }
       }
       (Predicate::Not(p), q) | (q, Predicate::Not(p)) if **p == *q => Predicate::top(),
@@ -383,7 +346,7 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
     Predicate::Bool(false)
   }
 
-  fn with_lambda(&self, f: Self::Term) -> Self {
+  fn with_lambda(&self, f: &Self::Term) -> Self {
     match f {
       Lambda::Id => self.clone(),
       Lambda::Constant(c) => {
@@ -403,11 +366,11 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
         }
         Predicate::WithLambda { p, f: f2 } => Predicate::WithLambda {
           p: p.clone(),
-          f: f.compose(f2.clone()),
+          f: f.clone().compose(f2.clone()),
         },
         _ => Predicate::WithLambda {
           p: Box::new(self.clone()),
-          f,
+          f: f.clone(),
         },
       },
     }
@@ -417,10 +380,7 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
     match self {
       Predicate::Bool(b) => *b,
       Predicate::Eq(a) => *a == *arg,
-      Predicate::Range {
-        left,
-        right,
-      } => {
+      Predicate::Range { left, right } => {
         left.as_ref().map(|l| *l <= *arg).unwrap_or(true)
           && right.as_ref().map(|r| *arg < *r).unwrap_or(true)
       }
@@ -433,7 +393,7 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
   }
 
   fn satisfiable(&self) -> bool {
-    matches!(self, Predicate::Bool(false))
+    !matches!(self, Predicate::Bool(false))
   }
 }
 
@@ -441,10 +401,12 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
 mod tests {
   use super::*;
 
+  type Prd = Predicate<char>;
+
   #[test]
   fn char() {
-    let eq_a = Predicate::char('a');
-    assert_eq!(Predicate::Eq('a'), eq_a);
+    let eq_a = Prd::char('a');
+    assert_eq!(Prd::Eq('a'), eq_a);
 
     assert!(eq_a.denote(&'a'));
     assert!(!eq_a.denote(&'b'));
@@ -456,9 +418,9 @@ mod tests {
     let f = &'f';
     let z = &'z';
 
-    let bigger_than_c = Predicate::range(Some('c'), None);
+    let bigger_than_c = Prd::range(Some('c'), None);
     assert_eq!(
-      Predicate::Range {
+      Prd::Range {
         left: Some('c'),
         right: None
       },
@@ -469,9 +431,9 @@ mod tests {
     assert!(bigger_than_c.denote(f));
     assert!(bigger_than_c.denote(z));
 
-    let smaller_than_v = Predicate::range(None, Some('v'));
+    let smaller_than_v = Prd::range(None, Some('v'));
     assert_eq!(
-      Predicate::Range {
+      Prd::Range {
         left: None,
         right: Some('v')
       },
@@ -482,9 +444,9 @@ mod tests {
     assert!(smaller_than_v.denote(f));
     assert!(!smaller_than_v.denote(z));
 
-    let between_f_k = Predicate::range(Some('f'), Some('k'));
+    let between_f_k = Prd::range(Some('f'), Some('k'));
     assert_eq!(
-      Predicate::Range {
+      Prd::Range {
         left: Some('f'),
         right: Some('k')
       },
@@ -496,22 +458,22 @@ mod tests {
     assert!(between_f_k.denote(&'i'));
     assert!(!between_f_k.denote(z));
 
-    let top = Predicate::range(None, None);
-    assert_eq!(Predicate::Bool(true), top);
+    let top = Prd::range(None, None);
+    assert_eq!(Prd::Bool(true), top);
     let top = top;
     assert!(top.denote(b));
     assert!(top.denote(f));
     assert!(top.denote(z));
 
-    let err = Predicate::range(Some('k'), Some('f'));
-    assert_eq!(Predicate::Bool(false), err);
+    let err = Prd::range(Some('k'), Some('f'));
+    assert_eq!(Prd::Bool(false), err);
     let bot = err;
     assert!(!bot.denote(b));
     assert!(!bot.denote(f));
     assert!(!bot.denote(z));
 
-    let eq = Predicate::range(Some('f'), Some('f'));
-    assert_eq!(Predicate::Eq('f'), eq);
+    let eq = Prd::range(Some('f'), Some('f'));
+    assert_eq!(Prd::Eq('f'), eq);
     let eq = eq;
     assert!(!eq.denote(b));
     assert!(eq.denote(f));
@@ -520,8 +482,8 @@ mod tests {
 
   #[test]
   fn in_set() {
-    let avd = Predicate::in_set(&['a', 'v', 'd']);
-    assert_eq!(Predicate::InSet(vec!['a', 'v', 'd']), avd);
+    let avd = Prd::in_set(['a', 'v', 'd']);
+    assert_eq!(Prd::InSet(vec!['a', 'v', 'd']), avd);
 
     assert!(avd.denote(&'a'));
     assert!(avd.denote(&'v'));
@@ -533,39 +495,34 @@ mod tests {
 
   #[test]
   fn with_lambda() {
-    let cond_x = Predicate::char('x');
-    let cond_num = Predicate::range(Some('0'), Some('9'));
-    let cond_set_xyz = Predicate::in_set(&['x', 'y', 'z']);
+    let cond_x = Prd::char('x');
+    let cond_num = Prd::range(Some('0'), Some('9'));
+    let cond_set_xyz = Prd::in_set(['x', 'y', 'z']);
 
-    let cnst;
-    let map;
-    let fnc;
-    {
-      let fnc_cond1 = Predicate::range(Some('f'), Some('l')); //f, g, h, i, j, k
-      let fnc_cond2 = Predicate::in_set(&['b', 's', 'w']);
-
-      cnst = Lambda::<Predicate<char>>::Constant('x');
-      map = Lambda::<Predicate<char>>::Mapping(vec![('a', 'x'), ('b', 'y'), ('c', 'z')]);
-      fnc = Lambda::<Predicate<char>>::Function(vec![
-        (Box::new(fnc_cond1), '1'),
-        (Box::new(fnc_cond2), '2'),
-      ]);
-    }
-
-    let cond_x = cond_x.with_lambda(cnst);
+    let cond_x = cond_x.with_lambda(&Lambda::Constant('x'));
     assert!(cond_x.denote(&'a'));
     assert!(cond_x.denote(&'x'));
     assert!(cond_x.denote(&'z'));
     assert!(cond_x.denote(&'9'));
 
-    let cond_set_xyz = cond_set_xyz.with_lambda(map);
+    let cond_set_xyz = cond_set_xyz.with_lambda(&Lambda::Mapping(vec![
+      ('a', 'x'),
+      ('b', 'y'),
+      ('c', 'z'),
+    ]));
     assert!(cond_set_xyz.denote(&'a'));
     assert!(cond_set_xyz.denote(&'b'));
     assert!(cond_set_xyz.denote(&'c'));
     assert!(!cond_set_xyz.denote(&'0'));
     assert!(!cond_set_xyz.denote(&'s'));
 
-    let cond_num = cond_num.with_lambda(fnc);
+    let fnc_cond1 = Prd::range(Some('f'), Some('l')); //f, g, h, i, j, k
+    let fnc_cond2 = Prd::in_set(['b', 's', 'w']);
+
+    let cond_num = cond_num.with_lambda(&Lambda::Function(vec![
+      (Box::new(fnc_cond1), '1'),
+      (Box::new(fnc_cond2), '2'),
+    ]));
     assert!(cond_num.denote(&'f'));
     assert!(cond_num.denote(&'g'));
     assert!(cond_num.denote(&'h'));

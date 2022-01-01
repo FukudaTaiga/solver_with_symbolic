@@ -1,4 +1,4 @@
-use crate::char_util::FromChar;
+use crate::util::FromChar;
 use crate::regular::regex::Regex;
 use crate::state::State;
 use crate::transducer::transducer::Transducer;
@@ -8,6 +8,7 @@ use smt2parser::{
 };
 use std::{fmt::Debug, iter::FromIterator};
 
+type VarIndex = usize;
 pub type Variables = Vec<String>;
 
 pub fn get_symbol(qi: &QualIdentifier) -> &str {
@@ -134,8 +135,6 @@ impl<T: FromChar, S: State> Transduction<T, S> {
     }
   }
 }
-
-type VarIndex = usize;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct StraightLineConstraint<T: FromChar, S: State>(
