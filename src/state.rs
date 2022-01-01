@@ -7,16 +7,6 @@ use std::{
   sync::atomic::{AtomicUsize, Ordering},
 };
 
-static STATE_CNT: AtomicUsize = AtomicUsize::new(0);
-
-#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone)]
-pub struct StateImpl(usize);
-impl StateImpl {
-  pub fn new() -> StateImpl {
-    StateImpl(STATE_CNT.fetch_add(1, Ordering::SeqCst))
-  }
-}
-
 pub trait State: Debug + Eq + Ord + Hash + Clone {
   fn new() -> Self;
 }
@@ -28,6 +18,16 @@ impl State for StateImpl {
 impl State for Rc<StateImpl> {
   fn new() -> Self {
     Rc::new(StateImpl::new())
+  }
+}
+
+static STATE_CNT: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone)]
+pub struct StateImpl(usize);
+impl StateImpl {
+  pub fn new() -> StateImpl {
+    StateImpl(STATE_CNT.fetch_add(1, Ordering::SeqCst))
   }
 }
 
@@ -271,7 +271,7 @@ pub trait StateMachine: Sized {
   }
 }
 
-pub mod macros {
+pub(crate) mod macros {
   macro_rules! impl_state_machine {
     ( $states:ident, $initial_state:ident, $final_set:ident, $transition:ident ) => {
       fn states(&self) -> &HashSet<Self::StateType> {

@@ -88,16 +88,6 @@ where
   }
 }
 
-static VAR_CNT: AtomicUsize = AtomicUsize::new(0);
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
-pub struct VariableImpl(usize);
-impl VariableImpl {
-  pub fn new() -> VariableImpl {
-    VariableImpl(VAR_CNT.fetch_add(1, Ordering::SeqCst))
-  }
-}
-
 pub trait Variable: Debug + Eq + Ord + Hash + Clone {
   fn new() -> Self;
 }
@@ -109,6 +99,16 @@ impl Variable for VariableImpl {
 impl Variable for Rc<VariableImpl> {
   fn new() -> Self {
     Rc::new(VariableImpl::new())
+  }
+}
+
+static VAR_CNT: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
+pub struct VariableImpl(usize);
+impl VariableImpl {
+  pub fn new() -> VariableImpl {
+    VariableImpl(VAR_CNT.fetch_add(1, Ordering::SeqCst))
   }
 }
 

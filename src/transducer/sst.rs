@@ -313,7 +313,7 @@ where
                 })
                 .collect(),
             );
-            (S::clone(&i2), u.clone())
+            (S::clone(&i2), u)
           })
           .collect();
       } else {
@@ -396,9 +396,7 @@ where
   V: Variable,
 {
   type StateType = S;
-
   type BoolAlg = B;
-
   type Target = Target<F, S, V>;
   type FinalState = (S, Output<D, V>);
   type FinalSet = HashMap<S, Output<D, V>>;

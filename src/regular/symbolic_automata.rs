@@ -299,7 +299,7 @@ where
   }
 
   pub fn pre_image<V: Variable>(self, sst: SymSST<D, B, <B as BoolAlg>::Term, S, V>) -> Self {
-    eprintln!("{:#?}", sst);
+    eprintln!("{:?}\n", sst);
     let mut states = HashMap::new();
     let mut initial_states = HashSet::new();
     let mut transition: HashMap<_, Vec<_>> = HashMap::new();
@@ -412,7 +412,10 @@ where
 
             eprintln!("pos: {:?}, next: {:?}", possibilities, nexts);
 
-            /* if both sst and sfa are minimized, nexts.len() != 0. it cannot panic */
+            /*
+             * if both sst and sfa are minimized, nexts.len() != 0. it cannot panic
+             * if nexts.len() over 64, then it will not working => check possibilities consists of all of nexts with iterator.
+             */
             let mut is_nexts_covered: usize = (1 << nexts.len()) - 1;
             possibilities = possibilities
               .into_iter()
@@ -548,7 +551,6 @@ where
   S: State,
 {
   type StateType = S;
-
   type BoolAlg = B;
   type Target = S;
   type FinalState = S;
@@ -818,9 +820,8 @@ mod tests {
     let states = HashSet::from([
       initial_state.clone(),
       dead_state.clone(),
-      final_state.clone()
+      final_state.clone(),
     ]);
-    
     let final_states = HashSet::from([final_state.clone()]);
 
     let abc = Predicate::range(Some('a'), Some('d'));

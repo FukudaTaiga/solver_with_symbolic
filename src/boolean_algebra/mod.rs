@@ -155,12 +155,12 @@ impl<T: FromChar> PartialEq for Predicate<T> {
 }
 impl<T: FromChar> Predicate<T> {
   pub fn range(left: Option<T>, right: Option<T>) -> Self {
-    match (&left, &right) {
+    match (left.as_ref(), right.as_ref()) {
       (Some(l), Some(r)) => {
-        if r < l {
+        if *r < *l {
           Predicate::bot()
-        } else if r == l {
-          Predicate::char(l.clone())
+        } else if *r == *l {
+          Predicate::char(left.unwrap())
         } else {
           Predicate::Range { left, right }
         }
@@ -175,8 +175,12 @@ impl<T: FromChar> Predicate<T> {
     let mut els = vec![];
 
     while let Some(e) = elements.next() {
-      els.push(e);
+      if !els.contains(&e) {
+        els.push(e);
+      }
     }
+
+    els.sort();
 
     if els.len() == 0 {
       Predicate::bot()
@@ -195,7 +199,7 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
     Predicate::Eq(a)
   }
 
-  fn and<'a>(&'a self, other: &'a Self) -> Self {
+  fn and(&self, other: &Self) -> Self {
     match (self, other) {
       (Predicate::Bool(b), p) | (p, Predicate::Bool(b)) => {
         if *b {
@@ -261,7 +265,7 @@ impl<T: FromChar> BoolAlg for Predicate<T> {
     }
   }
 
-  fn or<'a>(&'a self, other: &'a Self) -> Self {
+  fn or(&self, other: &Self) -> Self {
     match (self, other) {
       (Predicate::Bool(b), p) | (p, Predicate::Bool(b)) => {
         if *b {
@@ -483,7 +487,7 @@ mod tests {
   #[test]
   fn in_set() {
     let avd = Prd::in_set(['a', 'v', 'd']);
-    assert_eq!(Prd::InSet(vec!['a', 'v', 'd']), avd);
+    assert_eq!(Prd::InSet(vec!['a', 'd', 'v']), avd);
 
     assert!(avd.denote(&'a'));
     assert!(avd.denote(&'v'));
@@ -505,11 +509,8 @@ mod tests {
     assert!(cond_x.denote(&'z'));
     assert!(cond_x.denote(&'9'));
 
-    let cond_set_xyz = cond_set_xyz.with_lambda(&Lambda::Mapping(vec![
-      ('a', 'x'),
-      ('b', 'y'),
-      ('c', 'z'),
-    ]));
+    let cond_set_xyz =
+      cond_set_xyz.with_lambda(&Lambda::Mapping(vec![('a', 'x'), ('b', 'y'), ('c', 'z')]));
     assert!(cond_set_xyz.denote(&'a'));
     assert!(cond_set_xyz.denote(&'b'));
     assert!(cond_set_xyz.denote(&'c'));

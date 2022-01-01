@@ -76,7 +76,6 @@ where
   S: State,
 {
   type StateType = S;
-
   type BoolAlg = B;
   type Target = Target<F, S>;
   type FinalState = S;

@@ -1,6 +1,6 @@
 use std::{fmt::Debug, hash::Hash};
 
-pub trait FromChar: Debug + PartialEq + Eq + PartialOrd + Ord + Clone + Hash {
+pub trait FromChar: Debug + Eq + Ord + Clone + Hash {
   fn from_char(c: char) -> Self;
   fn separator() -> Self;
 }

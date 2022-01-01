@@ -1,4 +1,4 @@
-use super::{recognizable::Recognizable, symbolic_automata::Sfa};
+use super::{macros::sfa, recognizable::Recognizable, symbolic_automata::Sfa};
 use crate::{
   boolean_algebra::{BoolAlg, Predicate},
   smt2,
@@ -177,81 +177,38 @@ impl<T: FromChar> Regex<T> {
   pub fn to_sym_fa<S: State>(self) -> Sfa<T, S> {
     match self {
       Regex::Empty => Sfa::empty(),
-      Regex::Epsilon => {
-        let initial_state = S::new();
-        let mut states = HashSet::new();
-        let mut final_states = HashSet::new();
-        let mut transition = HashMap::new();
-        let refusal_state = S::new();
-
-        states.insert(initial_state.clone());
-        states.insert(refusal_state.clone());
-
-        final_states.insert(initial_state.clone());
-
-        transition.insert(
-          (initial_state.clone(), Predicate::all_char()),
-          vec![refusal_state.clone()],
-        );
-
-        Sfa::new(states, initial_state, final_states, transition)
-      }
-      Regex::Element(a) => {
-        let initial_state = S::new();
-        let mut states = HashSet::new();
-        let mut final_states = HashSet::new();
-        let mut transition = HashMap::new();
-        let final_state = S::new();
-
-        states.insert(initial_state.clone());
-        states.insert(final_state.clone());
-        final_states.insert(final_state.clone());
-
-        transition.insert(
-          (initial_state.clone(), Predicate::char(a)),
-          vec![final_state],
-        );
-
-        Sfa::new(states, initial_state, final_states, transition)
-      }
-      Regex::All => {
-        let initial_state = S::new();
-        let mut states = HashSet::new();
-        let mut final_states = HashSet::new();
-        let mut transition = HashMap::new();
-        let final_state = S::new();
-
-        states.insert(initial_state.clone());
-        states.insert(final_state.clone());
-
-        final_states.insert(final_state.clone());
-
-        transition.insert(
-          (initial_state.clone(), Predicate::all_char()),
-          vec![final_state],
-        );
-
-        Sfa::new(states, initial_state, final_states, transition)
-      }
-      Regex::Range(left, right) => {
-        let initial_state = S::new();
-        let mut states = HashSet::new();
-        let mut final_states = HashSet::new();
-        let mut transition = HashMap::new();
-        let final_state = S::new();
-
-        states.insert(initial_state.clone());
-        states.insert(final_state.clone());
-
-        final_states.insert(final_state.clone());
-
-        transition.insert(
-          (initial_state.clone(), Predicate::range(left, right)),
-          vec![final_state],
-        );
-
-        Sfa::new(states, initial_state, final_states, transition)
-      }
+      Regex::Epsilon => sfa!(
+        { initial, dead },
+        {
+          -> initial,
+          (initial, Predicate::top()) -> [dead]
+        },
+        { initial }
+      ),
+      Regex::Element(a) => sfa!(
+        { initial, final_state },
+        {
+          -> initial,
+          (initial, Predicate::char(a)) -> [final_state]
+        },
+        { final_state }
+      ),
+      Regex::All => sfa!(
+        { initial, final_state },
+        {
+          -> initial,
+          (initial, Predicate::top()) -> [final_state]
+        },
+        { final_state }
+      ),
+      Regex::Range(left, right) => sfa!(
+        { initial, final_state },
+        {
+          -> initial,
+          (initial, Predicate::range(left, right)) -> [final_state]
+        },
+        { final_state }
+      ),
       Regex::Concat(v) => v
         .into_iter()
         .map(|r| r.to_sym_fa())
