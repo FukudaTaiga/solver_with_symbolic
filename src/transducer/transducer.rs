@@ -2,7 +2,7 @@ use super::term::{FunctionTerm, FunctionTermImpl};
 use crate::{
   boolean_algebra::{BoolAlg, Predicate},
   state::{State, StateMachine, self},
-  util::FromChar
+  util::Domain
 };
 use std::{
   collections::{HashMap, HashSet},
@@ -27,7 +27,7 @@ where
 }
 impl<D, B, F, S> SymFST<D, B, F, S>
 where
-  D: FromChar,
+  D: Domain,
   B: BoolAlg<Domain = D>,
   F: FunctionTerm<Domain = D>,
   S: State,
@@ -70,7 +70,7 @@ where
 }
 impl<D, B, F, S> StateMachine for SymFST<D, B, F, S>
 where
-  D: FromChar,
+  D: Domain,
   B: BoolAlg<Domain = D>,
   F: FunctionTerm<Domain = D>,
   S: State,

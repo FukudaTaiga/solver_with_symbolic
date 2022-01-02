@@ -310,7 +310,7 @@ pub(crate) mod macros {
 }
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
   use super::*;
   use std::collections::hash_map::{DefaultHasher, RandomState};
   use std::hash::Hasher;

@@ -35,25 +35,25 @@ mod tests {
   type Builder = SstBuilder<CharWrap, StateImpl, VariableImpl>;
   type Smt = Smt2<CharWrap, StateImpl>;
 
-  pub mod helper {
+  pub(crate) mod helper {
     use super::*;
-    use util::FromChar;
+    use util::Domain;
     pub use state::StateImpl;
     use transducer::term::OutputComp;
     pub use transducer::term::VariableImpl;
 
-    pub fn chars<T: FromChar>(s: &str) -> Vec<T> {
-      s.chars().map(|c| T::from_char(c)).collect()
+    pub(crate) fn chars<T: Domain>(s: &str) -> Vec<T> {
+      s.chars().map(|c| T::from(c)).collect()
     }
 
-    pub fn to_replacer<T: FromChar>(s: &str) -> Vec<OutputComp<T, VariableImpl>> {
-      s.chars().map(|c| OutputComp::A(T::from_char(c))).collect()
+    pub(crate) fn to_replacer<T: Domain>(s: &str) -> Vec<OutputComp<T, VariableImpl>> {
+      s.chars().map(|c| OutputComp::A(T::from(c))).collect()
     }
 
-    pub fn to_charwrap<T: FromChar>(vs: &[&str]) -> Vec<T> {
+    pub(crate) fn to_charwrap<T: Domain>(vs: &[&str]) -> Vec<T> {
       vs.into_iter()
         .map(|s| {
-          let mut w = s.chars().map(|c| T::from_char(c)).collect::<Vec<_>>();
+          let mut w = s.chars().map(|c| T::from(c)).collect::<Vec<_>>();
           w.push(T::separator());
           w
         })

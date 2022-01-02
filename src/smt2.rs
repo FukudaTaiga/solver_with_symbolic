@@ -1,4 +1,4 @@
-use crate::util::FromChar;
+use crate::util::Domain;
 use crate::regular::regex::Regex;
 use crate::state::State;
 use crate::transducer::transducer::Transducer;
@@ -13,10 +13,10 @@ pub type Variables = Vec<String>;
 
 pub fn get_symbol(qi: &QualIdentifier) -> &str {
   if let QualIdentifier::Simple {
-    identifier: Identifier::Simple { symbol: Symbol(s) },
+    identifier: Identifier::Simple { symbol: Symbol(symbol) },
   } = qi
   {
-    s
+    symbol
   } else {
     panic!("Unsupported: {}", qi);
   }
@@ -56,7 +56,7 @@ impl ReplaceTarget {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum TransductionOp<T: FromChar, S: State> {
+pub enum TransductionOp<T: Domain, S: State> {
   Var(VarIndex),
   Reverse(VarIndex),
   Str(String),
@@ -67,8 +67,8 @@ pub enum TransductionOp<T: FromChar, S: State> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Transduction<T: FromChar, S: State>(pub Vec<TransductionOp<T, S>>);
-impl<T: FromChar, S: State> Transduction<T, S> {
+pub struct Transduction<T: Domain, S: State>(pub Vec<TransductionOp<T, S>>);
+impl<T: Domain, S: State> Transduction<T, S> {
   pub fn empty() -> Self {
     Self(vec![])
   }
@@ -137,17 +137,17 @@ impl<T: FromChar, S: State> Transduction<T, S> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct StraightLineConstraint<T: FromChar, S: State>(
+pub struct StraightLineConstraint<T: Domain, S: State>(
   pub(crate) VarIndex,
   pub(crate) Transduction<T, S>,
 );
 #[derive(Debug, PartialEq, Clone)]
-pub struct RegularConstraint<T: FromChar>(pub(crate) VarIndex, pub(crate) Regex<T>);
+pub struct RegularConstraint<T: Domain>(pub(crate) VarIndex, pub(crate) Regex<T>);
 #[derive(Debug, PartialEq, Clone)]
 pub struct IntLinearConstraint(pub(crate) VarIndex, pub(crate) Vec<LinearTerm>);
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Constraint<T: FromChar, S: State> {
+pub enum Constraint<T: Domain, S: State> {
   STLine(StraightLineConstraint<T, S>),
   Reg(RegularConstraint<T>),
   #[allow(dead_code)]
@@ -155,8 +155,8 @@ pub enum Constraint<T: FromChar, S: State> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Constraints<T: FromChar, S: State>(Vec<Constraint<T, S>>);
-impl<T: FromChar, S: State> Constraints<T, S> {
+pub struct Constraints<T: Domain, S: State>(Vec<Constraint<T, S>>);
+impl<T: Domain, S: State> Constraints<T, S> {
   pub fn new(constraints: Vec<Constraint<T, S>>) -> Self {
     Constraints(constraints)
   }
@@ -207,7 +207,7 @@ impl<T: FromChar, S: State> Constraints<T, S> {
     self.0.iter()
   }
 }
-impl<T: FromChar, S: State> FromIterator<Constraint<T, S>> for Constraints<T, S> {
+impl<T: Domain, S: State> FromIterator<Constraint<T, S>> for Constraints<T, S> {
   fn from_iter<It: IntoIterator<Item = Constraint<T, S>>>(iter: It) -> Self {
     let mut constraints = Constraints::new(vec![]);
 
@@ -218,7 +218,7 @@ impl<T: FromChar, S: State> FromIterator<Constraint<T, S>> for Constraints<T, S>
     constraints
   }
 }
-impl<T: FromChar, S: State> IntoIterator for Constraints<T, S> {
+impl<T: Domain, S: State> IntoIterator for Constraints<T, S> {
   type Item = Constraint<T, S>;
   type IntoIter = std::vec::IntoIter<Self::Item>;
 
@@ -261,13 +261,13 @@ impl Debug for Logic {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Smt2<T: FromChar, S: State> {
+pub struct Smt2<T: Domain, S: State> {
   constraints: Constraints<T, S>,
   vars: Variables,
   int_vars: Variables,
   option: SMTOption,
 }
-impl<T: FromChar, S: State> Smt2<T, S> {
+impl<T: Domain, S: State> Smt2<T, S> {
   pub fn parse(input: &str) -> Result<Self, String> {
     let commands = CommandStream::new(input.as_bytes(), SyntaxBuilder, None)
       .collect::<Result<Vec<_>, _>>()
@@ -447,7 +447,6 @@ impl<T: FromChar, S: State> Smt2<T, S> {
 mod tests {
   use super::*;
   use crate::tests::helper::*;
-  use std::rc::Rc;
 
   #[test]
   fn parse_correctly() {
@@ -462,7 +461,7 @@ mod tests {
     (assert (str.in.re x2 (re.* (str.to.re "aa"))))
     (check-sat)
     "#;
-    let smt2 = Smt2::<char, Rc<StateImpl>>::parse(input).unwrap();
+    let smt2 = Smt2::<char, StateImpl>::parse(input).unwrap();
     assert_eq!(
       &vec!["x0".to_string(), "x1".to_string(), "x2".to_string()],
       smt2.vars(),

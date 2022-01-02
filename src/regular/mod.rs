@@ -27,7 +27,7 @@ pub(crate) mod macros {
 }
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
   use super::regex::Regex;
   use crate::tests::helper::*;
 

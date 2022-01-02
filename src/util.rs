@@ -1,13 +1,9 @@
 use std::{fmt::Debug, hash::Hash};
 
-pub trait FromChar: Debug + Eq + Ord + Clone + Hash {
-  fn from_char(c: char) -> Self;
+pub trait Domain: Debug + Eq + Ord + Clone + Hash + From<char> {
   fn separator() -> Self;
 }
-impl FromChar for char {
-  fn from_char(c: char) -> Self {
-    c
-  }
+impl Domain for char {
   fn separator() -> Self {
     '#'
   }
@@ -18,19 +14,21 @@ pub enum CharWrap {
   Char(char),
   Separator,
 }
-impl FromChar for CharWrap {
-  fn from_char(c: char) -> Self {
-    CharWrap::Char(c)
+impl From<char> for CharWrap {
+  fn from(a: char) -> Self {
+    CharWrap::Char(a)
   }
+}
+impl Domain for CharWrap {
   fn separator() -> Self {
     CharWrap::Separator
   }
 }
 
-pub mod extention {
+pub(crate) mod extention {
   use std::{collections::HashMap, default::Default, hash::Hash, iter::Extend};
 
-  pub trait HashMapExt {
+  pub(crate) trait MultiMap {
     type Key: Eq + Hash;
     type Value;
 
@@ -38,7 +36,7 @@ pub mod extention {
 
     fn merge(&mut self, other: Self);
   }
-  impl<K, V, Collection> HashMapExt for HashMap<K, Collection>
+  impl<K, V, Collection> MultiMap for HashMap<K, Collection>
   where
     K: Eq + Hash,
     Collection: IntoIterator<Item = V> + Extend<V> + Default,
@@ -56,6 +54,21 @@ pub mod extention {
         let values = self.entry(key).or_default();
         values.extend(values_);
       }
+    }
+  }
+
+  pub(crate) trait ImmutableValueMap {
+    type Key: Eq + Hash;
+    type Value;
+
+    fn safe_insert(&mut self, key: Self::Key, value: Self::Value);
+  }
+  impl<K: Eq + Hash, V> ImmutableValueMap for HashMap<K, V> {
+    type Key = K;
+    type Value = V;
+
+    fn safe_insert(&mut self, key: Self::Key, value: Self::Value) {
+      assert!(self.insert(key, value).is_none());
     }
   }
 }

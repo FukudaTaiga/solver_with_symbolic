@@ -1,5 +1,5 @@
 use crate::transducer::term::{FunctionTerm, Lambda};
-use crate::util::FromChar;
+use crate::util::Domain;
 use std::{fmt::Debug, hash::Hash};
 
 /** express effective Boolean Algebra A, tuple of (D, Phi, [], top, bot, and, or, not) \
@@ -13,7 +13,7 @@ use std::{fmt::Debug, hash::Hash};
  * not: [not p] -> D \ [p]
  */
 pub trait BoolAlg: Debug + Eq + Hash + Clone {
-  type Domain: FromChar;
+  type Domain: Domain;
   type Term: FunctionTerm<Domain = Self::Domain>;
 
   /**
@@ -106,7 +106,7 @@ impl<B: BoolAlg> BoolAlg for WithEps<B> {
 
 /** for Primitive Predicate */
 #[derive(Debug, Eq, Hash, Clone)]
-pub enum Predicate<T: FromChar> {
+pub enum Predicate<T: Domain> {
   Bool(bool),
   Eq(T),
   /** whether satisfying arg left <= arg && arg < right */
@@ -123,7 +123,7 @@ pub enum Predicate<T: FromChar> {
     f: Lambda<Self>,
   },
 }
-impl<T: FromChar> PartialEq for Predicate<T> {
+impl<T: Domain> PartialEq for Predicate<T> {
   fn eq(&self, other: &Self) -> bool {
     match (self, other) {
       (Predicate::Bool(b1), Predicate::Bool(b2)) => !(b1 ^ b2),
@@ -153,7 +153,7 @@ impl<T: FromChar> PartialEq for Predicate<T> {
     }
   }
 }
-impl<T: FromChar> Predicate<T> {
+impl<T: Domain> Predicate<T> {
   pub fn range(left: Option<T>, right: Option<T>) -> Self {
     match (left.as_ref(), right.as_ref()) {
       (Some(l), Some(r)) => {
@@ -191,7 +191,7 @@ impl<T: FromChar> Predicate<T> {
     }
   }
 }
-impl<T: FromChar> BoolAlg for Predicate<T> {
+impl<T: Domain> BoolAlg for Predicate<T> {
   type Domain = T;
   type Term = Lambda<Self>;
 
@@ -460,6 +460,7 @@ mod tests {
     assert!(!between_f_k.denote(b));
     assert!(between_f_k.denote(f));
     assert!(between_f_k.denote(&'i'));
+    assert!(!between_f_k.denote(&'k'));
     assert!(!between_f_k.denote(z));
 
     let top = Prd::range(None, None);

@@ -4,7 +4,10 @@ use crate::boolean_algebra::{BoolAlg, Predicate};
 use crate::regular::{regex::Regex, symbolic_automata::Sfa};
 use crate::smt2::{ReplaceTarget, StraightLineConstraint, Transduction, TransductionOp};
 use crate::state::{State, StateMachine};
-use crate::util::FromChar;
+use crate::util::{
+  extention::{ImmutableValueMap, MultiMap},
+  Domain,
+};
 use std::collections::{HashMap, HashSet};
 
 macro_rules! make_update {
@@ -15,10 +18,10 @@ macro_rules! make_update {
   };
 }
 
-pub struct SstBuilder<T: FromChar, S: State, V: Variable> {
+pub struct SstBuilder<T: Domain, S: State, V: Variable> {
   ssts: Vec<Sst<T, S, V>>,
 }
-impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
+impl<T: Domain, S: State, V: Variable> SstBuilder<T, S, V> {
   pub fn replace_all_reg(reg: Regex<T>, replace: Vec<OutputComp<T, V>>) -> Sst<T, S, V> {
     assert_ne!(reg, Regex::Empty);
     assert_ne!(reg, Regex::Epsilon);
@@ -34,7 +37,7 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
     let sfa = reg.to_sym_fa();
     /*
      * used for back to initial state when failing to match.
-     * calculate all predicate which is not used for any transition from given state
+     * calculate all predicate which is not of all transition from given state
      */
     let not_predicates = sfa
       .states()
@@ -62,33 +65,30 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
 
     let mut transition = HashMap::new();
 
-    let suc_next = {
-      let mut v = vec![UpdateComp::X(V::clone(&res))];
-      v.extend(replace_update.iter().cloned());
-      v
+    let start = make_update! {
+      res -> {
+        let mut v = vec![UpdateComp::X(V::clone(&res))];
+        v.extend(replace_update.iter().cloned());
+        v
+      },
+      acc -> vec![UpdateComp::F(Lambda::identity())]
     };
-    let suc_reset = {
-      let mut v = vec![UpdateComp::X(V::clone(&res))];
-      v.extend(replace_update.iter().cloned());
-      v.push(UpdateComp::F(Lambda::identity()));
-      v
+    let reset = make_update! {
+      res -> {
+        let mut v = vec![UpdateComp::X(V::clone(&res))];
+        v.extend(replace_update.iter().cloned());
+        v.push(UpdateComp::F(Lambda::identity()));
+        v
+      },
+      acc -> vec![]
     };
     for p in &final_states {
       /*
        * succeed to match and try to next match
        * variable maps
        */
-      let start = make_update!(
-        res -> suc_next.clone(),
-        acc -> vec![UpdateComp::F(Lambda::identity())]
-      );
-      let reset = make_update! {
-        res -> suc_reset.clone(),
-        acc -> vec![]
-      };
-
       for ((_, phi), target) in &initial_maps {
-        transition.insert(
+        transition.safe_insert(
           (S::clone(p), phi.clone()),
           target
             .into_iter()
@@ -97,70 +97,69 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
         );
       }
 
-      transition.insert(
-        (
-          S::clone(p),
-          not_predicates.get(&initial_state).unwrap().clone(),
-        ),
-        vec![(S::clone(&initial_state), reset)],
-      );
+      let not_pred_init = not_predicates.get(&initial_state).unwrap();
+      if not_pred_init.satisfiable() {
+        transition.safe_insert(
+          (S::clone(p), not_pred_init.clone()),
+          vec![(S::clone(&initial_state), reset.clone())],
+        );
+      }
     }
 
+    /* variable maps */
+    let step = make_update! {
+      acc -> vec![
+        UpdateComp::X(V::clone(&acc)),
+        UpdateComp::F(Lambda::identity()),
+      ]
+    };
+    let start = make_update! {
+      res -> vec![UpdateComp::X(V::clone(&res)), UpdateComp::X(V::clone(&acc))],
+      acc -> vec![UpdateComp::F(Lambda::identity())]
+    };
+    let reset = make_update! {
+      res -> vec![
+        UpdateComp::X(V::clone(&res)),
+        UpdateComp::X(V::clone(&acc)),
+        UpdateComp::F(Lambda::identity()),
+      ],
+      acc -> vec![]
+    };
     for ((p, phi), target) in &transition_ {
       if !final_states.contains(p) {
-        /* variable maps */
-        let step = make_update! {
-          acc -> vec![
-            UpdateComp::X(V::clone(&acc)),
-            UpdateComp::F(Lambda::identity()),
-          ]
-        };
-        let start = make_update! {
-          res -> vec![UpdateComp::X(V::clone(&res)), UpdateComp::X(V::clone(&acc))],
-          acc -> vec![UpdateComp::F(Lambda::identity())]
-        };
-        let reset = make_update! {
-          res -> vec![
-            UpdateComp::X(V::clone(&res)),
-            UpdateComp::X(V::clone(&acc)),
-            UpdateComp::F(Lambda::identity()),
-          ],
-          acc -> vec![]
-        };
-
         /* matches current target char and go to next state. */
-        transition.insert(
+        transition.insert_with_check(
           (S::clone(p), phi.clone()),
-          target
-            .into_iter()
-            .map(|q| (S::clone(q), step.clone()))
-            .collect(),
+          target.into_iter().map(|q| (S::clone(q), step.clone())),
         );
 
         let not_pred_p = not_predicates.get(p).unwrap();
         for ((_, phi), target) in &initial_maps {
-          /* first char of a given regex */
-          transition.insert(
-            (S::clone(p), not_pred_p.and(phi)),
-            target
-              .into_iter()
-              .map(|q| (S::clone(q), start.clone()))
-              .collect(),
-          );
+          let phi = not_pred_p.and(phi);
+          if phi.satisfiable() {
+            /* first char of a given regex */
+            transition.insert_with_check(
+              (S::clone(p), phi),
+              target.into_iter().map(|q| (S::clone(q), start.clone())),
+            );
+          }
         }
 
         let not_pred_init = not_predicates.get(&initial_state).unwrap();
-        /* failed to match next and any first char of the regex */
-        transition.insert(
-          (S::clone(p), not_pred_p.and(not_pred_init)),
-          vec![(S::clone(&initial_state), reset)],
-        );
+        let phi = not_pred_p.and(not_pred_init);
+        if phi.satisfiable() {
+          /* failed to match next and any first char of the regex */
+          transition.insert_with_check(
+            (S::clone(p), phi),
+            [(S::clone(&initial_state), reset.clone())],
+          );
+        }
       }
     }
 
     let match_out = {
       let mut v = vec![OutputComp::X(V::clone(&res))];
-      v.extend(replace.into_iter());
+      v.extend(replace);
       v
     };
 
@@ -209,6 +208,7 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
       .iter()
       .map(|state| (S::clone(state), sfa.state_predicate(state).not()))
       .collect::<HashMap<_, _>>();
+
     let Sfa {
       mut states,
       transition: transition_,
@@ -229,86 +229,27 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
 
     /* once matches given regex, cycle and stack the rest of input on result */
     let cycle_state = S::new();
-    let top = Predicate::all_char();
 
     let mut transition = HashMap::new();
 
+    let to_cycle = make_update! {
+      res -> {
+        let mut v = vec![UpdateComp::X(V::clone(&res))];
+        v.extend(replace_update.iter().map(|up| up.clone()));
+        v.push(UpdateComp::F(Lambda::identity()));
+        v
+      }
+    };
     for p in &final_states {
       /* succeed to match and go to cycle state */
-      let to_cycle = make_update! {
-        res -> {
-          let mut v = vec![UpdateComp::X(V::clone(&res))];
-          v.extend(replace_update.iter().map(|up| up.clone()));
-          v.push(UpdateComp::F(Lambda::identity()));
-          v
-        }
-      };
-      transition.insert(
-        (S::clone(p), top.clone()),
-        vec![(S::clone(&cycle_state), to_cycle)],
+      transition.safe_insert(
+        (S::clone(p), Predicate::top()),
+        vec![(S::clone(&cycle_state), to_cycle.clone())],
       );
     }
 
-    for ((p, phi), target) in &transition_ {
-      if !final_states.contains(p) {
-        /* variable maps */
-        let update = make_update! {
-          acc -> vec![
-              UpdateComp::X(V::clone(&acc)),
-              UpdateComp::F(Lambda::identity()),
-            ]
-        };
-        let reset = make_update! {
-          res -> vec![
-            UpdateComp::X(V::clone(&res)),
-            UpdateComp::X(V::clone(&acc)),
-            UpdateComp::F(Lambda::identity()),
-          ],
-          acc -> vec![]
-        };
-        let start = make_update! {
-          res -> vec![UpdateComp::X(V::clone(&res)), UpdateComp::X(V::clone(&acc))],
-          acc -> vec![UpdateComp::F(Lambda::identity())]
-        };
-
-        for ((_, phi), target) in &initial_maps {
-          /* they're first char of a given regex */
-          for q in *target {
-            transition.insert(
-              (
-                S::clone(p),
-                not_predicates.get(p).unwrap_or(&Predicate::bot()).and(phi),
-              ),
-              vec![(S::clone(q), start.clone())],
-            );
-          }
-        }
-
-        /* failed to match next and any first char of the regex */
-        transition.insert(
-          (
-            S::clone(p),
-            not_predicates.get(p).unwrap_or(&Predicate::bot()).and(
-              not_predicates
-                .get(&initial_state)
-                .unwrap_or(&Predicate::bot()),
-            ),
-          ),
-          vec![(S::clone(&initial_state), reset)],
-        );
-        /* matches current target char and go to next state. */
-        transition.insert(
-          (S::clone(p), phi.clone()),
-          target
-            .into_iter()
-            .map(|q| (S::clone(q), update.clone()))
-            .collect(),
-        );
-      }
-    }
-
-    transition.insert(
-      (S::clone(&cycle_state), top.clone()),
+    transition.safe_insert(
+      (S::clone(&cycle_state), Predicate::top()),
       vec![(
         S::clone(&cycle_state),
         make_update! {
@@ -317,13 +258,65 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
       )],
     );
 
+    /* variable maps */
+    let update = make_update! {
+      acc -> vec![
+          UpdateComp::X(V::clone(&acc)),
+          UpdateComp::F(Lambda::identity()),
+        ]
+    };
+    let reset = make_update! {
+      res -> vec![
+        UpdateComp::X(V::clone(&res)),
+        UpdateComp::X(V::clone(&acc)),
+        UpdateComp::F(Lambda::identity()),
+      ],
+      acc -> vec![]
+    };
+    let start = make_update! {
+      res -> vec![UpdateComp::X(V::clone(&res)), UpdateComp::X(V::clone(&acc))],
+      acc -> vec![UpdateComp::F(Lambda::identity())]
+    };
+    for ((p, phi), target) in &transition_ {
+      if !final_states.contains(p) {
+        for ((_, phi), target) in &initial_maps {
+          let phi = not_predicates.get(p).unwrap_or(&Predicate::bot()).and(phi);
+          if phi.satisfiable() {
+            /* they're first char of a given regex */
+            for q in *target {
+              transition
+                .insert_with_check((S::clone(p), phi.clone()), [(S::clone(q), start.clone())]);
+            }
+          }
+        }
+
+        let return_init_pred = not_predicates.get(p).unwrap_or(&Predicate::bot()).and(
+          not_predicates
+            .get(&initial_state)
+            .unwrap_or(&Predicate::bot()),
+        );
+        /* failed to match next and any first char of the regex */
+        if return_init_pred.satisfiable() {
+          transition.insert_with_check(
+            (S::clone(p), return_init_pred),
+            [(S::clone(&initial_state), reset.clone())],
+          );
+        }
+        /* matches current target char and go to next state. */
+        transition.insert_with_check(
+          (S::clone(p), phi.clone()),
+          target.into_iter().map(|q| (S::clone(q), update.clone())),
+        );
+      }
+    }
+
     let mut output_function = states
       .iter()
       .map(|state| {
         if final_states.contains(state) {
           (S::clone(state), {
             let mut v = vec![OutputComp::X(V::clone(&res))];
-            v.extend(replace.iter().map(|out| out.clone()));
+            v.extend(replace.iter().cloned());
             v
           })
         } else {
@@ -338,7 +331,7 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
     /* states is used in above iteration, so update it at this line */
     states.insert(S::clone(&cycle_state));
 
-    output_function.insert(S::clone(&cycle_state), vec![OutputComp::X(V::clone(&res))]);
+    output_function.safe_insert(cycle_state, vec![OutputComp::X(V::clone(&res))]);
 
     Sst::new(
       states,
@@ -412,10 +405,7 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
     let variables = HashSet::new();
     let output_function = HashMap::from([(
       S::clone(&initial_state),
-      output
-        .chars()
-        .map(|c| OutputComp::A(T::from_char(c)))
-        .collect(),
+      output.chars().map(|c| OutputComp::A(T::from(c))).collect(),
     )]);
     let transition = HashMap::from([(
       (S::clone(&initial_state), Predicate::all_char()),
@@ -477,13 +467,13 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
           TransductionOp::Str(s) => {
             for (_, output) in idx_sst.final_set_mut() {
               for c in s.chars() {
-                output.push(OutputComp::A(T::from_char(c)));
+                output.push(OutputComp::A(T::from(c)));
               }
             }
           }
           TransductionOp::Replace(id, reg, target) => {
             let replace = match target {
-              ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(T::from_char(c))).collect(),
+              ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(T::from(c))).collect(),
               ReplaceTarget::Var(id) => vec![OutputComp::X(V::clone(vars.get(id).unwrap()))],
             };
             let result_var = V::new();
@@ -498,7 +488,7 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
           }
           TransductionOp::ReplaceAll(id, reg, target) => {
             let replace = match target {
-              ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(T::from_char(c))).collect(),
+              ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(T::from(c))).collect(),
               ReplaceTarget::Var(id) => vec![OutputComp::X(V::clone(vars.get(id).unwrap()))],
             };
             let result_var = V::new();
@@ -575,12 +565,51 @@ impl<T: FromChar, S: State, V: Variable> SstBuilder<T, S, V> {
 }
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
   use super::*;
   use crate::tests::helper::*;
   use std::iter::FromIterator;
 
   type Builder = SstBuilder<char, StateImpl, VariableImpl>;
+
+  /* ident concatenation is stil nightly https://doc.rust-lang.org/std/macro.concat_idents.html */
+  macro_rules! replace_test {
+    (
+      name: $name:ident,
+      name_all: $name_all:ident,
+      from: $from:expr,
+      to: $to:expr,
+      cases: [ $( $case:expr ),+ ]
+    ) => {
+      #[test]
+      fn $name() {
+        let replace = Builder::replace_reg(Regex::seq($from), to_replacer($to));
+
+        eprintln!("{:?}", replace);
+
+        $(
+          assert_eq!(
+            String::from_iter(&replace.run(&chars($case))[0]),
+            $case.replacen($from, $to, 1).to_string()
+          );
+        )+
+      }
+
+      #[test]
+      fn $name_all() {
+        let replace_all = Builder::replace_all_reg(Regex::seq($from), to_replacer($to));
+
+        eprintln!("{:?}", replace_all);
+
+        $(
+          assert_eq!(
+            String::from_iter(&replace_all.run(&chars($case))[0]),
+            $case.replace($from, $to).to_string()
+          );
+        )+
+      }
+    };
+  }
 
   #[test]
   fn identity() {
@@ -637,80 +666,6 @@ pub mod tests {
   }
 
   #[test]
-  fn abc_to_xyz_all_reg() {
-    let rep = Builder::replace_all_reg(Regex::seq("abc"), to_replacer("xyz"));
-
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abc"))[0]),
-      "xyz".to_string()
-    );
-    assert_eq!(String::from_iter(&rep.run(&chars("a"))[0]), "a".to_string());
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("bc"))[0]),
-      "bc".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abcababc"))[0]),
-      "xyzabxyz".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abcabcabcaaabbaccbackljhg"))[0]),
-      "xyzxyzxyzaaabbaccbackljhg".to_string()
-    );
-  }
-
-  #[test]
-  fn a_to_many_all_reg() {
-    let rep = Builder::replace_all_reg(
-      Regex::element('a'),
-      to_replacer("qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\"),
-    );
-
-    eprintln!("{:#?}", rep);
-
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abc"))[0]),
-      "qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\bc".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("a"))[0]),
-      "qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("bc"))[0]),
-      "bc".to_string()
-    );
-    assert_eq!(
-            String::from_iter(
-                &rep.run(&chars("abcabcabcaaabbaccbackljhg"))[0]
-            ),
-            "qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\bcqwertyuiop@[asdfghjkl;:]zxcvbnm,./\\bcqwertyuiop@[asdfghjkl;:]zxcvbnm,./\\bcqwertyuiop@[asdfghjkl;:]zxcvbnm,./\\qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\bbqwertyuiop@[asdfghjkl;:]zxcvbnm,./\\ccbqwertyuiop@[asdfghjkl;:]zxcvbnm,./\\ckljhg".to_string()
-        );
-  }
-
-  #[test]
-  fn abcxyz_to_1_all_reg() {
-    let rep = Builder::replace_all_reg(Regex::seq("abcxyz"), to_replacer("1"));
-
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abcxyz"))[0]),
-      "1".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abcxy"))[0]),
-      "abcxy".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abcyz"))[0]),
-      "abcyz".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("aaaabcxyzabcxyabcxyzzzabcxyz"))[0]),
-      "aaa1abcxy1zz1".to_string()
-    );
-  }
-
-  #[test]
   #[should_panic]
   fn reject_empty_substr_reg() {
     let _rep = Builder::replace_reg(Regex::Empty, vec![]);
@@ -724,73 +679,27 @@ pub mod tests {
     eprintln!("unreachable");
   }
 
-  #[test]
-  fn abc_to_xyz_reg() {
-    let rep = Builder::replace_reg(Regex::seq("abc"), to_replacer("xyz"));
-
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abc"))[0]),
-      "xyz".to_string()
-    );
-    assert_eq!(String::from_iter(&rep.run(&chars("a"))[0]), "a".to_string());
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("bc"))[0]),
-      "bc".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abcababc"))[0]),
-      "xyzababc".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abcabcabcaaabbaccbackljhg"))[0]),
-      "xyzabcabcaaabbaccbackljhg".to_string()
-    );
+  replace_test! {
+    name: abc_to_xyz,
+    name_all: abc_to_xyz_all,
+    from: "abc",
+    to: "xyz",
+    cases: ["abc", "bc", "abcababc", "abcabcabcaaabbaccbackljhg"]
   }
 
-  #[test]
-  fn a_to_many_reg() {
-    let rep = Builder::replace_reg(
-      Regex::element('a'),
-      to_replacer("qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\"),
-    );
-
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abc"))[0]),
-      "qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\bc".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("a"))[0]),
-      "qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("bc"))[0]),
-      "bc".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abcabcabcaaabbaccbackljhg"))[0]),
-      "qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\bcabcabcaaabbaccbackljhg".to_string()
-    );
+  replace_test! {
+    name: a_to_many,
+    name_all: a_to_many_all,
+    from: "a",
+    to: "qwertyuiop@[asdfghjkl;:]zxcvbnm,./\\",
+    cases: ["abc", "a", "bc", "abcabcabcaaabbaccbackljhg"]
   }
 
-  #[test]
-  fn abcxyz_to_1_reg() {
-    let rep = Builder::replace_reg(Regex::seq("abcxyz"), to_replacer("1"));
-
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abcxyz"))[0]),
-      "1".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abcxy"))[0]),
-      "abcxy".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("abcyz"))[0]),
-      "abcyz".to_string()
-    );
-    assert_eq!(
-      String::from_iter(&rep.run(&chars("aaaabcxyzabcxyabcxyzzzabcxyz"))[0]),
-      "aaa1abcxyabcxyzzzabcxyz".to_string()
-    );
+  replace_test! {
+    name: abcxyz_to_1,
+    name_all: abcxyz_to_1_all,
+    from: "abcxyz",
+    to: "1",
+    cases: ["abcxyz", "abcxy", "abcyz", "aaaabcxyzabcxyabcxyzzzabcxyz"]
   }
 }

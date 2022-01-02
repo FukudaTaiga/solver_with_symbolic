@@ -1,7 +1,7 @@
 use super::term::{FunctionTerm, FunctionTermImpl, Lambda, OutputComp, UpdateComp, Variable};
 use crate::boolean_algebra::{BoolAlg, Predicate};
 use crate::state::{State, StateMachine, self};
-use crate::util::FromChar;
+use crate::util::Domain;
 use std::{
   collections::{HashMap, HashSet},
   fmt::Debug,
@@ -34,7 +34,7 @@ where
 }
 impl<D, B, F, S, V> SymSST<D, B, F, S, V>
 where
-  D: FromChar,
+  D: Domain,
   B: BoolAlg<Domain = D>,
   F: FunctionTerm<Domain = D>,
   S: State,
@@ -123,7 +123,7 @@ where
 }
 impl<D, S, V> SymSST<D, Predicate<D>, FunctionTermImpl<D>, S, V>
 where
-  D: FromChar,
+  D: Domain,
   S: State,
   V: Variable,
 {
@@ -297,7 +297,7 @@ where
     }
 
     let joint = o1.into_iter().map(|(fs1, out)| {
-      let joint: Vec<Target<FunctionTermImpl<D>, S, V>>;
+      let joint;
       if let Some(target) = t1.get(&(S::clone(&fs1), Predicate::char(D::separator()))) {
         joint = target
           .iter()
@@ -344,9 +344,9 @@ where
         target
           .into_iter()
           .map(|(q, mut u)| {
-            for var in res_vars.iter() {
+            res_vars.iter().for_each(|var| {
               u.insert(V::clone(&var), vec![UpdateComp::X(V::clone(&var))]);
-            }
+            });
             (q, u)
           })
           .collect(),
@@ -365,11 +365,12 @@ where
       .map(|(fs, out)| {
         (
           fs,
-          vec![
+          [
             OutputComp::X(V::clone(&res_of_self)),
             OutputComp::A(D::separator()),
           ]
-          .into_iter()
+          .iter()  //https://doc.rust-lang.org/nightly/edition-guide/rust-2021/IntoIterator-for-arrays.html
+          .cloned()
           .chain(out.into_iter())
           .collect(),
         )
@@ -389,7 +390,7 @@ where
 }
 impl<D, B, F, S, V> StateMachine for SymSST<D, B, F, S, V>
 where
-  D: FromChar,
+  D: Domain,
   B: BoolAlg<Domain = D>,
   F: FunctionTerm<Domain = D>,
   S: State,

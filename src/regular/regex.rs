@@ -1,9 +1,9 @@
-use super::{macros::sfa, recognizable::Recognizable, symbolic_automata::Sfa};
+use super::{recognizable::Recognizable, symbolic_automata::Sfa};
 use crate::{
   boolean_algebra::{BoolAlg, Predicate},
   smt2,
   state::{State, StateMachine},
-  util::FromChar,
+  util::Domain,
 };
 use smt2parser::concrete::{Constant, Term};
 use std::{
@@ -24,7 +24,7 @@ pub enum Regex<T: PartialOrd> {
   Star(Box<Regex<T>>),
   Not(Box<Regex<T>>),
 }
-impl<T: FromChar> Regex<T> {
+impl<T: Domain> Regex<T> {
   pub fn empty() -> Self {
     Regex::Empty
   }
@@ -38,12 +38,12 @@ impl<T: FromChar> Regex<T> {
   }
 
   pub fn element(c: char) -> Self {
-    Regex::Element(T::from_char(c))
+    Regex::Element(T::from(c))
   }
 
   pub fn seq(s: &str) -> Self {
     s.chars()
-      .map(|c| Regex::Element(T::from_char(c)))
+      .map(|c| Regex::Element(T::from(c)))
       .reduce(|reg, el| reg.concat(el))
       .unwrap_or(Regex::Epsilon)
   }
@@ -56,9 +56,9 @@ impl<T: FromChar> Regex<T> {
       .and_then(|l| end.as_ref().and_then(|r| Some(*l == *r)))
       .unwrap_or(false)
     {
-      Regex::Element(T::from_char(start.unwrap()))
+      Regex::Element(T::from(start.unwrap()))
     } else {
-      Regex::Range(start.map(|c| T::from_char(c)), end.map(|c| T::from_char(c)))
+      Regex::Range(start.map(|c| T::from(c)), end.map(|c| T::from(c)))
     }
   }
 
@@ -66,8 +66,8 @@ impl<T: FromChar> Regex<T> {
     match (self, other) {
       (Regex::Empty, _) | (_, Regex::Empty) => Regex::Empty,
       (Regex::Epsilon, r) | (r, Regex::Epsilon) => r,
-      (Regex::Concat(mut v1), Regex::Concat(mut v2)) => {
-        v1.append(&mut v2);
+      (Regex::Concat(mut v1), Regex::Concat(v2)) => {
+        v1.extend(v2);
         Regex::Concat(v1)
       }
       (r, Regex::Concat(v_)) => {
@@ -177,15 +177,14 @@ impl<T: FromChar> Regex<T> {
   pub fn to_sym_fa<S: State>(self) -> Sfa<T, S> {
     match self {
       Regex::Empty => Sfa::empty(),
-      Regex::Epsilon => sfa!(
-        { initial, dead },
+      Regex::Epsilon => super::macros::sfa!(
+        { initial },
         {
           -> initial,
-          (initial, Predicate::top()) -> [dead]
         },
         { initial }
       ),
-      Regex::Element(a) => sfa!(
+      Regex::Element(a) => super::macros::sfa!(
         { initial, final_state },
         {
           -> initial,
@@ -193,7 +192,7 @@ impl<T: FromChar> Regex<T> {
         },
         { final_state }
       ),
-      Regex::All => sfa!(
+      Regex::All => super::macros::sfa!(
         { initial, final_state },
         {
           -> initial,
@@ -201,7 +200,7 @@ impl<T: FromChar> Regex<T> {
         },
         { final_state }
       ),
-      Regex::Range(left, right) => sfa!(
+      Regex::Range(left, right) => super::macros::sfa!(
         { initial, final_state },
         {
           -> initial,
@@ -239,7 +238,7 @@ impl<T: FromChar> Regex<T> {
           if let [term] = &arguments[..] {
             if let Term::Constant(Constant::String(s)) = term {
               s.chars().fold(Regex::Epsilon, |reg, c| {
-                reg.concat(Regex::Element(T::from_char(c)))
+                reg.concat(Regex::Element(T::from(c)))
               })
             } else {
               panic!("Syntax Error")

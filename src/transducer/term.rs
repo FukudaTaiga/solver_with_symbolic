@@ -1,5 +1,5 @@
 use crate::boolean_algebra::{BoolAlg, Predicate};
-use crate::util::FromChar;
+use crate::util::Domain;
 use std::{
   fmt::Debug,
   hash::Hash,
@@ -8,7 +8,7 @@ use std::{
 };
 
 pub trait FunctionTerm: Debug + Eq + Hash + Clone {
-  type Domain: FromChar;
+  type Domain: Domain;
 
   fn identity() -> Self;
 
@@ -127,7 +127,7 @@ pub enum OutputComp<T, V: Variable> {
 pub type FunctionTermImpl<T> = Lambda<Predicate<T>>;
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
   use super::*;
   use std::collections::{
     hash_map::{DefaultHasher, RandomState},
