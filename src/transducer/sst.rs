@@ -1,6 +1,6 @@
 use super::term::{FunctionTerm, FunctionTermImpl, Lambda, OutputComp, UpdateComp, Variable};
 use crate::boolean_algebra::{BoolAlg, Predicate};
-use crate::state::{State, StateMachine, self};
+use crate::state::{self, State, StateMachine};
 use crate::util::Domain;
 use std::{
   collections::{HashMap, HashSet},
@@ -155,14 +155,11 @@ where
     } = other;
 
     let cartesian = s1
-      .into_iter()
-      .flat_map(|p| {
-        s2.iter()
-          .map(move |q| ((S::clone(&p), S::clone(q)), S::new()))
-      })
+      .iter()
+      .flat_map(|p| s2.iter().map(move |q| ((p, q), S::new())))
       .collect::<HashMap<_, _>>();
 
-    let initial_state = cartesian.get(&(i1, i2)).expect(error_msg).clone();
+    let initial_state = cartesian.get(&(&i1, &i2)).expect(error_msg).clone();
 
     let mut variables = v1.into_iter().chain(v2.into_iter()).collect::<HashSet<_>>();
     variables.insert(V::clone(result));
@@ -173,21 +170,13 @@ where
       .flat_map(|((p1, phi1), v1)| {
         t2.iter()
           .map(|((p2, phi2), v2)| {
-            let p = S::clone(
-              cartesian
-                .get(&(S::clone(p1), S::clone(p2)))
-                .expect(error_msg),
-            );
+            let p = S::clone(cartesian.get(&(p1, p2)).expect(error_msg));
             let v = v1
               .into_iter()
               .flat_map(|(q1, u1)| {
                 v2.into_iter()
                   .map(|(q2, u2)| {
-                    let q = S::clone(
-                      cartesian
-                        .get(&(S::clone(q1), S::clone(q2)))
-                        .expect(error_msg),
-                    );
+                    let q = S::clone(cartesian.get(&(q1, q2)).expect(error_msg));
 
                     let u = u1
                       .iter()
@@ -209,9 +198,7 @@ where
 
     for (fs1, o1) in o1.iter() {
       for (fs2, o2) in o2.iter() {
-        let fs = cartesian
-          .get(&(S::clone(fs1), S::clone(fs2)))
-          .expect(error_msg);
+        let fs = cartesian.get(&(fs1, fs2)).expect(error_msg);
 
         output_function.insert(S::clone(fs), o1.clone());
 
@@ -369,7 +356,7 @@ where
             OutputComp::X(V::clone(&res_of_self)),
             OutputComp::A(D::separator()),
           ]
-          .iter()  //https://doc.rust-lang.org/nightly/edition-guide/rust-2021/IntoIterator-for-arrays.html
+          .iter() //https://doc.rust-lang.org/nightly/edition-guide/rust-2021/IntoIterator-for-arrays.html
           .cloned()
           .chain(out.into_iter())
           .collect(),

@@ -49,58 +49,44 @@ pub trait BoolAlg: Debug + Eq + Hash + Clone {
   fn satisfiable(&self) -> bool;
 }
 /** Boolean Algebra with epsilon */
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub struct WithEps<B: BoolAlg>(Option<B>);
-impl<B: BoolAlg> WithEps<B> {
-  pub fn is_eps(&self) -> bool {
-    self.0.is_none()
-  }
-}
-impl<B: BoolAlg> BoolAlg for WithEps<B> {
+impl<B: BoolAlg> BoolAlg for Option<B> {
   type Domain = B::Domain;
   type Term = B::Term;
 
   fn char(a: Self::Domain) -> Self {
-    WithEps(Some(B::char(a)))
+    Some(B::char(a))
   }
   fn and(&self, other: &Self) -> Self {
-    WithEps(
-      self
-        .0
-        .as_ref()
-        .and_then(|p1| other.0.as_ref().map(|p2| p1.and(p2)))
-        .or(Some(B::bot())),
-    )
+    self
+      .as_ref()
+      .and_then(|p1| other.as_ref().map(|p2| p1.and(p2)))
+      .or(Some(B::bot()))
   }
   fn or(&self, other: &Self) -> Self {
-    WithEps(
-      self
-        .0
-        .as_ref()
-        .and_then(|p1| other.0.as_ref().map(|p2| p1.or(p2)))
-        .or(Some(B::bot())),
-    )
+    self
+      .as_ref()
+      .and_then(|p1| other.as_ref().map(|p2| p1.or(p2)))
+      .or(Some(B::bot()))
   }
   fn not(&self) -> Self {
-    WithEps(self.0.as_ref().map(|p| p.not()))
+    self.as_ref().map(|p| p.not())
   }
   fn top() -> Self {
-    WithEps(Some(B::top()))
+    Some(B::top())
   }
   fn bot() -> Self {
-    WithEps(Some(B::bot()))
+    Some(B::bot())
   }
   fn with_lambda(&self, f: &Self::Term) -> Self {
-    WithEps(self.0.as_ref().map(|p| p.with_lambda(f)))
+    self.as_ref().map(|p| p.with_lambda(f))
   }
 
-  /** apply argument to self and return the result */
   fn denote(&self, arg: &Self::Domain) -> bool {
-    self.0.as_ref().map_or_else(|| true, |p| p.denote(arg))
+    self.as_ref().map_or_else(|| true, |p| p.denote(arg))
   }
 
   fn satisfiable(&self) -> bool {
-    self.0.as_ref().map_or_else(|| true, |p| p.satisfiable())
+    self.as_ref().map_or_else(|| true, |p| p.satisfiable())
   }
 }
 

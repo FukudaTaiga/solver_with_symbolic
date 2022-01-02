@@ -98,8 +98,6 @@ pub(crate) mod tests {
         let expected = (chars($output), HashMap::from([
           $( ($var.clone(), vec![]) ),*
         ]));
-        eprintln!("expected{:#?}", expected);
-        eprintln!("{:#?}", results);
         assert!(results.into_iter().all(|seq| seq == expected));
         input.push(Domain::separator());
         let results = $sst.run_with_var(&$vars, &input);
@@ -107,8 +105,8 @@ pub(crate) mod tests {
         let expected = (output, HashMap::from([
           $( ($var.clone(), chars($var_expected)) ),*
         ]));
-        eprintln!("expected{:#?}", expected);
-        eprintln!("results{:#?}", results);
+        eprintln!("expected{:?}", expected);
+        eprintln!("results{:?}", results);
         assert!(results.contains(&expected));
       )+
     };
@@ -135,8 +133,8 @@ pub(crate) mod tests {
             )
           ),*
         ]));
-        eprintln!("expected{:#?}", expected);
-        eprintln!("results{:#?}", results);
+        eprintln!("expected{:?}", expected);
+        eprintln!("results{:?}", results);
         assert!(results.contains(&expected));
       )+
     };
@@ -259,7 +257,7 @@ pub(crate) mod tests {
       Builder::replace_reg(replace_from.clone(), replace_to.clone()),
       &var,
     );
-    eprintln!("{:?}", sst);
+    eprintln!("{:#?}", sst);
     check_merge! {
       sst: sst,
       vars: vars,
@@ -269,7 +267,7 @@ pub(crate) mod tests {
       wrap
     }
     let sst = sst.chain(Builder::reverse());
-    eprintln!("{:?}", sst);
+    //eprintln!("{:#?}", sst);
     check_merge! {
       sst: sst,
       vars: vars,
@@ -280,7 +278,7 @@ pub(crate) mod tests {
     }
 
     let sst = sst.chain(Builder::replace_all_reg(replace_from, replace_to));
-    eprintln!("{:?}", sst);
+    //eprintln!("{:#?}", sst);
     check_merge! {
       sst: sst,
       vars: vars,

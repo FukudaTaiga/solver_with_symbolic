@@ -14,7 +14,14 @@ use std::{
 type Source<S, B> = (S, B);
 type Target<S> = Vec<S>;
 
-/** symbolic automata
+/*
+ * https://stackoverflow.com/questions/32300132/why-cant-i-store-a-value-and-a-reference-to-that-value-in-the-same-struct
+ * https://stackoverflow.com/questions/41270052/cannot-infer-an-appropriate-lifetime-for-autoref-due-to-conflicting-requirements
+ * self-referential struct is unsafe in Rust - https://qiita.com/9laceef/items/aa0d7e1bd5041a1857d5
+ * need to think deeply of an implementation if more efficient one
+ */
+/**
+ * symbolic automata
  * each operation like concat, or, ... corresponds to regex's one.
  */
 #[derive(Debug, PartialEq, Clone)]
@@ -187,38 +194,25 @@ where
     } = other;
 
     let cartesian = s1
-      .into_iter()
-      .flat_map(|p| {
-        s2.iter()
-          .map(move |q| ((S::clone(&p), S::clone(q)), S::new()))
-      })
+      .iter()
+      .flat_map(|p| s2.iter().map(move |q| ((p, q), S::new())))
       .collect::<HashMap<_, _>>();
 
     let final_states = cartesian
       .iter()
-      .filter_map(|((p, q), s)| (f1.contains(p) && f2.contains(q)).then(|| S::clone(s)))
+      .filter_map(|((p, q), s)| (f1.contains(*p) && f2.contains(*q)).then(|| S::clone(s)))
       .collect();
 
     let mut transition = HashMap::new();
 
     for ((p1, phi1), q1) in &t1 {
       for ((p2, phi2), q2) in &t2 {
-        let p = S::clone(
-          cartesian
-            .get(&(S::clone(p1), S::clone(p2)))
-            .expect(error_msg),
-        );
+        let p = S::clone(cartesian.get(&(p1, p2)).expect(error_msg));
         let target: Vec<_> = q1
           .into_iter()
           .flat_map(|s1| {
             q2.into_iter()
-              .map(|s2| {
-                S::clone(
-                  cartesian
-                    .get(&(S::clone(s1), S::clone(s2)))
-                    .expect(error_msg),
-                )
-              })
+              .map(|s2| S::clone(cartesian.get(&(s1, s2)).expect(error_msg)))
               .collect::<Vec<_>>()
           })
           .collect();
@@ -227,7 +221,7 @@ where
       }
     }
 
-    let initial_state = cartesian.get(&(i1, i2)).expect(error_msg).clone();
+    let initial_state = cartesian.get(&(&i1, &i2)).expect(error_msg).clone();
 
     let states = cartesian.into_values().collect();
 
@@ -310,7 +304,7 @@ where
     macro_rules! step_with_var {
       ( $possibilities:ident,
         $var_name:ident,
-        | $curr:ident, $var_map:ident, $($others:ident),* |
+        | $curr:ident, $var_map:ident $(,$others:ident)* |
       ) => {
         $possibilities
           .into_iter()
@@ -340,7 +334,7 @@ where
             });
           }
           OutputComp::X(x) => {
-            possibilities = step_with_var!(possibilities, x, |curr, var_map,|);
+            possibilities = step_with_var!(possibilities, x, |curr, var_map|);
           }
         }
       }
