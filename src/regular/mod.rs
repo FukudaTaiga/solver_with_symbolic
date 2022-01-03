@@ -2,6 +2,7 @@ pub mod recognizable;
 pub mod regex;
 pub mod symbolic_automata;
 
+/* for readability */
 pub(crate) mod macros {
   macro_rules! sfa {
     ( { $( $state:ident ),+ },

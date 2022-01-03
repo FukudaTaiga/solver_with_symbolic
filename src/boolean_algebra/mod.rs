@@ -211,33 +211,19 @@ impl<T: Domain> BoolAlg for Predicate<T> {
           right: qr,
         },
       ) => {
-        let pl = pl.as_ref();
-        let ql = ql.as_ref();
-        let pr = pr.as_ref();
-        let qr = qr.as_ref();
-
-        let left = pl.map_or_else(
-          || ql,
-          |pl| ql.map_or_else(|| Some(pl), |ql| Some(pl.max(ql))),
+        let left = pl.as_ref().map_or_else(
+          || ql.as_ref(),
+          |pl| ql.as_ref().map_or_else(|| Some(pl), |ql| Some(pl.max(ql))),
         );
-        let right = pr.map_or_else(
-          || qr,
-          |pr| qr.map_or_else(|| Some(pr), |qr| Some(pr.min(qr))),
+        let right = pr.as_ref().map_or_else(
+          || qr.as_ref(),
+          |pr| qr.as_ref().map_or_else(|| Some(pr), |qr| Some(pr.min(qr))),
         );
 
         Predicate::range(left.cloned(), right.cloned())
       }
       (Predicate::InSet(els), p) | (p, Predicate::InSet(els)) => {
-        let els_ = els
-          .into_iter()
-          .filter(|e| p.denote(e))
-          .cloned()
-          .collect::<Vec<_>>();
-        if els_.len() == 0 {
-          Predicate::bot()
-        } else {
-          Predicate::in_set(els_)
-        }
+        Predicate::in_set(els.into_iter().filter(|e| p.denote(e)).cloned())
       }
       (Predicate::Not(p), q) | (q, Predicate::Not(p)) if **p == *q => Predicate::bot(),
       (Predicate::Not(p1), Predicate::Not(p2)) => Predicate::Not(Box::new(p1.or(p2))),
@@ -263,9 +249,13 @@ impl<T: Domain> BoolAlg for Predicate<T> {
       (Predicate::Eq(c), p) | (p, Predicate::Eq(c)) if p.denote(c) => p.clone(),
       (Predicate::Eq(c1), Predicate::Eq(c2)) => Predicate::in_set([c1.clone(), c2.clone()]),
       (Predicate::Eq(c), Predicate::InSet(els)) | (Predicate::InSet(els), Predicate::Eq(c)) => {
-        let mut els_ = els.clone();
-        els_.push(c.clone());
-        Predicate::in_set(els_)
+        if els.contains(c) {
+          Predicate::InSet(els.clone())
+        } else {
+          let mut els_ = els.clone();
+          els_.push(c.clone());
+          Predicate::InSet(els_)
+        }
       }
       (
         Predicate::Range {
@@ -280,21 +270,15 @@ impl<T: Domain> BoolAlg for Predicate<T> {
         if matches!((pl, qr), (Some(l), Some(r)) if l <= r)
           || matches!((ql, pr), (Some(l), Some(r)) if l <= r)
         {
-          let pl = pl.as_ref();
-          let ql = ql.as_ref();
-          let pr = pr.as_ref();
-          let qr = qr.as_ref();
-
-          let left = pl.and_then(|pl| ql.map(|ql| pl.min(ql)));
-          let right = pr.and_then(|pr| qr.map(|qr| pr.max(qr)));
+          let left = pl.as_ref().and_then(|pl| ql.as_ref().map(|ql| pl.min(ql)));
+          let right = pr.as_ref().and_then(|pr| qr.as_ref().map(|qr| pr.max(qr)));
           Predicate::range(left.cloned(), right.cloned())
         } else {
           Predicate::Or(Box::new(self.clone()), Box::new(other.clone()))
         }
       }
       (Predicate::InSet(els1), Predicate::InSet(els2)) => {
-        let els: std::collections::HashSet<_> = els1.into_iter().chain(els2.into_iter()).collect();
-        Predicate::in_set(els.into_iter().cloned())
+        Predicate::in_set(els1.into_iter().chain(els2.into_iter()).cloned())
       }
       (Predicate::InSet(els), p) | (p, Predicate::InSet(els)) => {
         let els_ = els
@@ -305,7 +289,7 @@ impl<T: Domain> BoolAlg for Predicate<T> {
         if els_.len() == 0 {
           p.clone()
         } else {
-          Predicate::Or(Box::new(Predicate::in_set(els_)), Box::new(p.clone()))
+          Predicate::Or(Box::new(Predicate::InSet(els_)), Box::new(p.clone()))
         }
       }
       (Predicate::Not(p), q) | (q, Predicate::Not(p)) if **p == *q => Predicate::top(),
@@ -339,21 +323,9 @@ impl<T: Domain> BoolAlg for Predicate<T> {
   fn with_lambda(&self, f: &Self::Term) -> Self {
     match f {
       Lambda::Id => self.clone(),
-      Lambda::Constant(c) => {
-        if self.denote(&c) {
-          Predicate::top()
-        } else {
-          Predicate::bot()
-        }
-      }
+      Lambda::Constant(c) => Predicate::boolean(self.denote(c)),
       f => match self {
-        Predicate::Bool(b) => {
-          if *b {
-            Predicate::top()
-          } else {
-            Predicate::bot()
-          }
-        }
+        Predicate::Bool(b) => Predicate::boolean(*b),
         Predicate::WithLambda { p, f: f2 } => Predicate::WithLambda {
           p: p.clone(),
           f: f.clone().compose(f2.clone()),

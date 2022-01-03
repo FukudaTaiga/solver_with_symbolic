@@ -10,12 +10,36 @@ use crate::util::{
 };
 use std::collections::{HashMap, HashSet};
 
-macro_rules! make_update {
-  ( $( $var:ident -> $seq:expr ),* ) => {
-    HashMap::from([
-      $( (V::clone(&$var), $seq) ),*
-    ])
-  };
+mod macros {
+  macro_rules! make_update {
+    ( $( $var:ident -> $seq:expr ),* ) => {
+      HashMap::from([
+        $( (V::clone(&$var), $seq) ),*
+      ])
+    };
+  }
+  /* for readability */
+  macro_rules! sst {
+    ( { $( $state:ident ),+ },
+      $variables:expr,
+      {
+        -> $initial:ident,
+        $( ($source:ident, $predicate:expr) -> [$( ( $target:ident, $update:expr ) ),*] ),*
+      },
+      { $( $fs:ident -> $output:expr ),* }
+    ) => {{
+      let mut states = HashSet::new();
+      $( let $state = S::new(); states.insert(S::clone(&$state)); )+
+      let transition = HashMap::from([
+        $( ((S::clone(&$source), $predicate), vec![$( (S::clone(&$target), $update) ),*]) )*
+      ]);
+      let output_function = HashMap::from([$( (S::clone(&$fs), $output) ),*]);
+      Sst::new(states, $variables, $initial, output_function, transition)
+    }};
+  }
+
+  pub(crate) use make_update;
+  pub(crate) use sst;
 }
 
 pub struct SstBuilder<T: Domain, S: State, V: Variable> {
@@ -65,7 +89,7 @@ impl<T: Domain, S: State, V: Variable> SstBuilder<T, S, V> {
 
     let mut transition = HashMap::new();
 
-    let start = make_update! {
+    let start = macros::make_update! {
       res -> {
         let mut v = vec![UpdateComp::X(V::clone(&res))];
         v.extend(replace_update.iter().cloned());
@@ -73,7 +97,7 @@ impl<T: Domain, S: State, V: Variable> SstBuilder<T, S, V> {
       },
       acc -> vec![UpdateComp::F(Lambda::identity())]
     };
-    let reset = make_update! {
+    let reset = macros::make_update! {
       res -> {
         let mut v = vec![UpdateComp::X(V::clone(&res))];
         v.extend(replace_update.iter().cloned());
@@ -107,17 +131,17 @@ impl<T: Domain, S: State, V: Variable> SstBuilder<T, S, V> {
     }
 
     /* variable maps */
-    let step = make_update! {
+    let step = macros::make_update! {
       acc -> vec![
         UpdateComp::X(V::clone(&acc)),
         UpdateComp::F(Lambda::identity()),
       ]
     };
-    let start = make_update! {
+    let start = macros::make_update! {
       res -> vec![UpdateComp::X(V::clone(&res)), UpdateComp::X(V::clone(&acc))],
       acc -> vec![UpdateComp::F(Lambda::identity())]
     };
-    let reset = make_update! {
+    let reset = macros::make_update! {
       res -> vec![
         UpdateComp::X(V::clone(&res)),
         UpdateComp::X(V::clone(&acc)),
@@ -232,7 +256,7 @@ impl<T: Domain, S: State, V: Variable> SstBuilder<T, S, V> {
 
     let mut transition = HashMap::new();
 
-    let to_cycle = make_update! {
+    let to_cycle = macros::make_update! {
       res -> {
         let mut v = vec![UpdateComp::X(V::clone(&res))];
         v.extend(replace_update.iter().map(|up| up.clone()));
@@ -252,20 +276,20 @@ impl<T: Domain, S: State, V: Variable> SstBuilder<T, S, V> {
       (S::clone(&cycle_state), Predicate::top()),
       vec![(
         S::clone(&cycle_state),
-        make_update! {
+        macros::make_update! {
           res -> vec![UpdateComp::X(V::clone(&res)), UpdateComp::F(Lambda::identity()),]
         },
       )],
     );
 
     /* variable maps */
-    let update = make_update! {
+    let update = macros::make_update! {
       acc -> vec![
           UpdateComp::X(V::clone(&acc)),
           UpdateComp::F(Lambda::identity()),
         ]
     };
-    let reset = make_update! {
+    let reset = macros::make_update! {
       res -> vec![
         UpdateComp::X(V::clone(&res)),
         UpdateComp::X(V::clone(&acc)),
@@ -273,7 +297,7 @@ impl<T: Domain, S: State, V: Variable> SstBuilder<T, S, V> {
       ],
       acc -> vec![]
     };
-    let start = make_update! {
+    let start = macros::make_update! {
       res -> vec![UpdateComp::X(V::clone(&res)), UpdateComp::X(V::clone(&acc))],
       acc -> vec![UpdateComp::F(Lambda::identity())]
     };
@@ -343,82 +367,78 @@ impl<T: Domain, S: State, V: Variable> SstBuilder<T, S, V> {
   }
 
   pub fn reverse() -> Sst<T, S, V> {
-    let initial_state = S::new();
     let res = V::new();
-    let states = HashSet::from([S::clone(&initial_state)]);
-    let variables = HashSet::from([V::clone(&res)]);
-    let output_function = HashMap::from([(
-      S::clone(&initial_state),
-      vec![OutputComp::X(V::clone(&res))],
-    )]);
-    let transition = HashMap::from([(
-      (S::clone(&initial_state), Predicate::all_char()),
-      vec![(
-        S::clone(&initial_state),
-        make_update! {
-          res -> vec![UpdateComp::F(Lambda::identity()), UpdateComp::X(res)]
-        },
-      )],
-    )]);
-
-    Sst::new(
-      states,
-      variables,
-      initial_state,
-      output_function,
-      transition,
-    )
+    macros::sst! {
+      { initial },
+      HashSet::from([res]),
+      {
+        -> initial,
+        (initial, Predicate::all_char()) -> [(
+          initial,
+          macros::make_update! {
+            res -> vec![UpdateComp::F(Lambda::identity()), UpdateComp::X(V::clone(&res))]
+          }
+        )]
+      },
+      {
+        initial -> vec![OutputComp::X(V::clone(&res))]
+      }
+    }
   }
 
   pub fn identity() -> Sst<T, S, V> {
-    let initial_state = S::new();
     let res = V::new();
-
-    let states = HashSet::from([S::clone(&initial_state)]);
-    let variables = HashSet::from([V::clone(&res)]);
-    let output_function = HashMap::from([(
-      S::clone(&initial_state),
-      vec![OutputComp::X(V::clone(&res))],
-    )]);
-    let transition = HashMap::from([(
-      (S::clone(&initial_state), Predicate::all_char()),
-      vec![(
-        S::clone(&initial_state),
-        make_update! {
-          res -> vec![UpdateComp::X(res), UpdateComp::F(Lambda::identity())]
-        },
-      )],
-    )]);
-
-    Sst::new(
-      states,
-      variables,
-      initial_state,
-      output_function,
-      transition,
-    )
+    macros::sst! {
+      { initial },
+      HashSet::from([res]),
+      {
+        -> initial,
+        (initial, Predicate::all_char()) -> [(
+          initial,
+          macros::make_update! {
+            res -> vec![UpdateComp::X(V::clone(&res)), UpdateComp::F(Lambda::identity())]
+          }
+        )]
+      },
+      {
+        initial -> vec![OutputComp::X(V::clone(&res))]
+      }
+    }
   }
 
   pub fn constant(output: &str) -> Sst<T, S, V> {
-    let initial_state = S::new();
-    let states = HashSet::from([S::clone(&initial_state)]);
-    let variables = HashSet::new();
-    let output_function = HashMap::from([(
-      S::clone(&initial_state),
-      output.chars().map(|c| OutputComp::A(T::from(c))).collect(),
-    )]);
-    let transition = HashMap::from([(
-      (S::clone(&initial_state), Predicate::all_char()),
-      vec![(S::clone(&initial_state), make_update! {})],
-    )]);
+    macros::sst! {
+      { initial },
+      HashSet::new(),
+      {
+        -> initial,
+        (initial, Predicate::all_char()) -> [(initial, macros::make_update! {})]
+      },
+      {
+        initial -> output.chars().map(|c| OutputComp::A(T::from(c))).collect()
+      }
+    }
+  }
 
-    Sst::new(
-      states,
-      variables,
-      initial_state,
-      output_function,
-      transition,
-    )
+  fn register(vars: &mut Vec<V>) -> Sst<T, S, V> {
+    let res = V::new();
+    vars.push(V::clone(&res));
+    macros::sst! {
+      { initial },
+      HashSet::from([res]),
+      {
+        -> initial,
+        (initial, Predicate::all_char()) -> [(
+          initial,
+          macros::make_update! {
+            res -> vec![UpdateComp::X(V::clone(&res)), UpdateComp::F(Lambda::identity())]
+          }
+        )]
+      },
+      {
+        initial -> vec![OutputComp::X(V::clone(&res))]
+      }
+    }
   }
 
   pub fn init(var_num: usize) -> Self {
@@ -527,40 +547,6 @@ impl<T: Domain, S: State, V: Variable> SstBuilder<T, S, V> {
       } else {
         idx_sst
       }
-  }
-
-  fn register(vars: &mut Vec<V>) -> Sst<T, S, V> {
-    let initial_state = S::new();
-    let var = V::new();
-
-    let states = HashSet::from([S::clone(&initial_state)]);
-    let variables = HashSet::from([V::clone(&var)]);
-    let output_function = HashMap::from([(
-      S::clone(&initial_state),
-      vec![OutputComp::X(V::clone(&var))],
-    )]);
-    let transition = HashMap::from([(
-      (S::clone(&initial_state), Predicate::all_char()),
-      vec![(
-        S::clone(&initial_state),
-        make_update! {
-          var -> vec![
-            UpdateComp::X(V::clone(&var)),
-            UpdateComp::F(Lambda::identity()),
-          ]
-        },
-      )],
-    )]);
-
-    vars.push(var);
-
-    Sst::new(
-      states,
-      variables,
-      initial_state,
-      output_function,
-      transition,
-    )
   }
 }
 

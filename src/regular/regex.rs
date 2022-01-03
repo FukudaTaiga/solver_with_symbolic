@@ -177,37 +177,37 @@ impl<T: Domain> Regex<T> {
   pub fn to_sym_fa<S: State>(self) -> Sfa<T, S> {
     match self {
       Regex::Empty => Sfa::empty(),
-      Regex::Epsilon => super::macros::sfa!(
+      Regex::Epsilon => super::macros::sfa! {
         { initial },
         {
           -> initial,
         },
         { initial }
-      ),
-      Regex::Element(a) => super::macros::sfa!(
+      },
+      Regex::Element(a) => super::macros::sfa! {
         { initial, final_state },
         {
           -> initial,
           (initial, Predicate::char(a)) -> [final_state]
         },
         { final_state }
-      ),
-      Regex::All => super::macros::sfa!(
+      },
+      Regex::All => super::macros::sfa! {
         { initial, final_state },
         {
           -> initial,
           (initial, Predicate::top()) -> [final_state]
         },
         { final_state }
-      ),
-      Regex::Range(left, right) => super::macros::sfa!(
+      },
+      Regex::Range(left, right) => super::macros::sfa! {
         { initial, final_state },
         {
           -> initial,
           (initial, Predicate::range(left, right)) -> [final_state]
         },
         { final_state }
-      ),
+      },
       Regex::Concat(v) => v
         .into_iter()
         .map(|r| r.to_sym_fa())
