@@ -1,8 +1,8 @@
 use super::term::{FunctionTerm, FunctionTermImpl};
 use crate::{
   boolean_algebra::{BoolAlg, Predicate},
-  state::{State, StateMachine, self},
-  util::Domain
+  state::{self, State, StateMachine},
+  util::Domain,
 };
 use std::{
   collections::{HashMap, HashSet},
@@ -14,7 +14,7 @@ type Target<F, S> = (S, Vec<F>);
 
 /** implementation of symbolic finite state transducer (SFST) */
 #[derive(Debug, PartialEq, Clone)]
-pub struct SymFST<D, B, F, S>
+pub struct SymFst<D, B, F, S>
 where
   B: BoolAlg<Domain = D>,
   F: FunctionTerm<Domain = D>,
@@ -25,7 +25,7 @@ where
   final_states: HashSet<S>,
   transition: HashMap<Source<B, S>, Vec<Target<F, S>>>,
 }
-impl<D, B, F, S> SymFST<D, B, F, S>
+impl<D, B, F, S> SymFst<D, B, F, S>
 where
   D: Domain,
   B: BoolAlg<Domain = D>,
@@ -60,15 +60,20 @@ where
         (S::clone(q), w)
       },
       |possibilities| {
-        possibilities
-          .into_iter()
-          .filter_map(|(s, w)| (self.final_states.contains(&s)).then(|| w))
-          .collect()
+        let mut results = vec![];
+        possibilities.into_iter().for_each(|(s, result)| {
+          if self.final_states.contains(&s) {
+            if !results.contains(&result) {
+              results.push(result);
+            }
+          }
+        });
+        results
       },
     )
   }
 }
-impl<D, B, F, S> StateMachine for SymFST<D, B, F, S>
+impl<D, B, F, S> StateMachine for SymFst<D, B, F, S>
 where
   D: Domain,
   B: BoolAlg<Domain = D>,
@@ -94,4 +99,4 @@ where
   state::macros::impl_state_machine!(states, initial_state, final_states, transition);
 }
 
-pub type Transducer<T, S> = SymFST<T, Predicate<T>, FunctionTermImpl<T>, S>;
+pub type Transducer<T, S> = SymFst<T, Predicate<T>, FunctionTermImpl<T>, S>;

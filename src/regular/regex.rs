@@ -9,9 +9,10 @@ use smt2parser::concrete::{Constant, Term};
 use std::{
   collections::{HashMap, HashSet},
   fmt::Debug,
+  hash::Hash
 };
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, std::hash::Hash)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Regex<T: PartialOrd> {
   Empty,
   Epsilon,
@@ -174,14 +175,12 @@ impl<T: Domain> Regex<T> {
   }
 
   /** with, thompson  --- clushkul, partial derivative */
-  pub fn to_sym_fa<S: State>(self) -> Sfa<T, S> {
+  pub fn to_sfa<S: State>(self) -> Sfa<T, S> {
     match self {
       Regex::Empty => Sfa::empty(),
       Regex::Epsilon => super::macros::sfa! {
         { initial },
-        {
-          -> initial,
-        },
+        { -> initial },
         { initial }
       },
       Regex::Element(a) => super::macros::sfa! {
@@ -210,21 +209,21 @@ impl<T: Domain> Regex<T> {
       },
       Regex::Concat(v) => v
         .into_iter()
-        .map(|r| r.to_sym_fa())
+        .map(|r| r.to_sfa())
         .reduce(|res, sfa| res.concat(sfa))
         .unwrap_or(Sfa::empty()),
       Regex::Or(v) => v
         .into_iter()
-        .map(|r| r.to_sym_fa())
+        .map(|r| r.to_sfa())
         .reduce(|res, sfa| res.or(sfa))
         .unwrap_or(Sfa::empty()),
       Regex::Inter(v) => v
         .into_iter()
-        .map(|r| r.to_sym_fa())
+        .map(|r| r.to_sfa())
         .reduce(|res, sfa| res.inter(sfa))
         .unwrap_or(Sfa::empty()),
-      Regex::Not(r) => r.to_sym_fa().not(),
-      Regex::Star(r) => r.to_sym_fa().star(),
+      Regex::Not(r) => r.to_sfa().not(),
+      Regex::Star(r) => r.to_sfa().star(),
     }
   }
 

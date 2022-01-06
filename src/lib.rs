@@ -1,46 +1,72 @@
 mod boolean_algebra;
-mod util;
 pub mod regular;
 pub mod smt2;
 mod state;
 pub mod transducer;
+mod util;
 
-use util::{CharWrap};
-use smt2::Smt2;
-use state::StateImpl;
-use std::{env, fs::File, io::Read, rc::Rc};
+use boolean_algebra::Predicate;
+use smt2::{Constraint, Smt2};
+use state::{StateImpl, StateMachine};
+use transducer::{sst_factory::SstBuilder, term::VariableImpl};
+use util::{CharWrap, Domain};
 
-pub fn run() {
-  let mut args = env::args();
-  args.next();
-  let mut input = String::new();
-  for arg in args {
-    if arg.starts_with("--") {
-    } else if arg.starts_with("-") {
-    } else {
-      File::open(arg).unwrap().read_to_string(&mut input).unwrap();
-    }
+#[derive(Debug, PartialEq)]
+pub enum SolverResult {
+  SAT,
+  Model(std::collections::HashMap<String, String>),
+  UNSAT,
+}
+
+pub fn run(input: &str) -> SolverResult {
+  let mut smt2 = Smt2::<CharWrap, StateImpl>::parse(input).unwrap();
+  println!("{:?}", smt2);
+
+  let mut sfa = smt2.emit_sfa();
+
+  let builder: SstBuilder<CharWrap, StateImpl, VariableImpl> = SstBuilder::init();
+
+  while let Some(sl_cons) = smt2.next() {
+    eprintln!("sfa: {:?}", sfa);
+    eprintln!("sl_cons: {:?}", sl_cons);
+    let sst = builder.generate(sl_cons.idx(), sl_cons.constraint());
+    eprintln!("generated sst: {:?}", sst);
+
+    sfa = sfa.pre_image(sst);
   }
 
-  let smt2 = Smt2::<CharWrap, Rc<StateImpl>>::parse(&input).unwrap();
+  eprintln!("sfa: {:#?}", sfa);
 
-  println!("{:?}", smt2);
+  if smt2.get_model() {
+    if let Some(path) = sfa.accepted_path() {
+      SolverResult::Model(smt2.to_model(path))
+    } else {
+      SolverResult::UNSAT
+    }
+  } else {
+    if sfa
+      .reachables(sfa.initial_state())
+      .into_iter()
+      .find(|s| sfa.final_set().contains(s))
+      .is_some()
+    {
+      SolverResult::SAT
+    } else {
+      SolverResult::UNSAT
+    }
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use transducer::sst_factory::SstBuilder;
-
-  type Builder = SstBuilder<CharWrap, StateImpl, VariableImpl>;
-  type Smt = Smt2<CharWrap, StateImpl>;
 
   pub(crate) mod helper {
     use super::*;
-    use util::Domain;
     pub use state::StateImpl;
     use transducer::term::OutputComp;
     pub use transducer::term::VariableImpl;
+    use util::Domain;
 
     pub(crate) fn chars<T: Domain>(s: &str) -> Vec<T> {
       s.chars().map(|c| T::from(c)).collect()
@@ -53,7 +79,7 @@ mod tests {
     pub(crate) fn to_charwrap<T: Domain>(vs: &[&str]) -> Vec<T> {
       vs.into_iter()
         .map(|s| {
-          let mut w = s.chars().map(|c| T::from(c)).collect::<Vec<_>>();
+          let mut w: Vec<_> = s.chars().map(|c| T::from(c)).collect();
           w.push(T::separator());
           w
         })
@@ -65,17 +91,28 @@ mod tests {
     }
   }
 
-  use helper::*;
+  #[test]
+  fn smt2_2_sst_simple() {
+    let input = r#"
+      (declare-const x0 String)
+      (declare-const x1 String)
+      (assert (= x1 (str.reverse x0)))
+      (assert (str.in.re x1 (re.* (str.to.re "ab"))))
+      (check-sat)
+      (get-model)
+      "#;
+
+    assert_eq!(run(input), SolverResult::SAT);
+
+    unimplemented!()
+  }
 
   #[test]
-  #[ignore]
-  fn smt2_2_sst() {
+  fn smt2_2_sst_complex() {
     let input = r#"
       (declare-const x0 String)
       (declare-const x1 String)
       (declare-const x2 String)
-      (declare-const x3 String)
-      (declare-const i2 Int)
       (assert (= x1 (str.++ x0 (str.reverse x0))))
       (assert (= x2
         (str.++ x1
@@ -89,32 +126,7 @@ mod tests {
       (check-sat)
       "#;
 
-    let smt2 = Smt::parse(input).unwrap();
-
-    let sst_builder = Builder::init(smt2.vars().len());
-
-    let ssts = sst_builder.generate(smt2.straight_line());
-
-    if let [sst0, sst1, sst2, sst3, ..] = &ssts[..] {
-      eprintln!("sst0 output:\n{:?}", sst0.run(&to_charwrap(&vec!["abc"])));
-
-      eprintln!(
-        "sst1 output:\n{:?}",
-        sst1.run(&to_charwrap(&vec!["abcdefg"]))
-      );
-
-      eprintln!(
-        "sst2 output:\n{:?}",
-        sst2.run(&to_charwrap(&vec!["kkkoooabcababc", "cdf"]))
-      );
-
-      eprintln!(
-        "sst3 output:\n{:?}",
-        sst3.run(&to_charwrap(&vec!["1", "2", "3"]))
-      );
-    } else {
-      unreachable!()
-    }
+    assert_eq!(run(input), SolverResult::SAT);
 
     unimplemented!()
   }

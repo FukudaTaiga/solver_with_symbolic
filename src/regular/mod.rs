@@ -7,20 +7,20 @@ pub(crate) mod macros {
   macro_rules! sfa {
     ( { $( $state:ident ),+ },
       {
-        -> $initial:ident,
-        $( ($source:ident, $predicate:expr) -> [$($target:ident),*] ),*
+        -> $initial:ident
+        $(, ($source:ident, $predicate:expr) -> [$($target:ident),*] )*
       },
       { $( $final_state:ident ),* }
     ) => {{
-      use crate::regular::symbolic_automata::SymFA;
+      use crate::regular::symbolic_automata::SymFa;
 
       let mut states = HashSet::new();
       $( let $state = S::new(); states.insert(S::clone(&$state)); )+
       let transition = HashMap::from([
-        $( (( S::clone(&$source), $predicate), vec![$(S::clone(&$target)),*]) )*
+        $( (( S::clone(&$source), $predicate), vec![$(S::clone(&$target)),*]) ),*
       ]);
       let final_states = HashSet::from([$( S::clone(&$final_state) ),*]);
-      SymFA::new(states, $initial, final_states, transition)
+      SymFa::new(states, $initial, final_states, transition)
     }};
   }
 
@@ -36,8 +36,8 @@ mod tests {
 
   #[test]
   fn reg_sfa_all() {
-    let all = Reg::all().to_sym_fa::<StateImpl>();
-    let universe = Reg::all().star().to_sym_fa::<StateImpl>();
+    let all = Reg::all().to_sfa::<StateImpl>();
+    let universe = Reg::all().star().to_sfa::<StateImpl>();
     assert!(all.run(&chars("a")));
     assert!(all.run(&chars("x")));
     assert!(all.run(&chars("$")));
@@ -54,7 +54,7 @@ mod tests {
 
   #[test]
   fn reg_sfa_epsilon() {
-    let sfa = Reg::epsilon().to_sym_fa::<StateImpl>();
+    let sfa = Reg::epsilon().to_sfa::<StateImpl>();
 
     assert!(sfa.run(&chars("")));
 
@@ -66,8 +66,8 @@ mod tests {
   #[test]
   fn epsilon_has_no_effect_with_concat() {
     let reg = Reg::seq("avc");
-    let orig = reg.clone().to_sym_fa::<StateImpl>();
-    let concat = reg.concat(Reg::epsilon()).to_sym_fa::<StateImpl>();
+    let orig = reg.clone().to_sfa::<StateImpl>();
+    let concat = reg.concat(Reg::epsilon()).to_sfa::<StateImpl>();
 
     assert!(orig.run(&chars("avc")));
     assert!(concat.run(&chars("avc")));
@@ -82,7 +82,7 @@ mod tests {
 
   #[test]
   fn reg_sfa_star() {
-    let sfa = Reg::seq("abc").star().to_sym_fa::<StateImpl>();
+    let sfa = Reg::seq("abc").star().to_sfa::<StateImpl>();
 
     for i in 0..10 {
       assert!(sfa.run(&chars(&"abc".repeat(i))));
@@ -100,7 +100,7 @@ mod tests {
       .star()
       .concat(Reg::seq("abc").plus())
       .concat(Reg::all().star());
-    let sfa = reg.to_sym_fa::<StateImpl>();
+    let sfa = reg.to_sfa::<StateImpl>();
 
     assert!(sfa.run(&chars("xxzxabcde")));
     assert!(sfa.run(&chars("abc")));
@@ -118,13 +118,13 @@ mod tests {
       .or(Reg::seq("kkk"))
       .or(Reg::all())
       .or(Reg::epsilon());
-    let sfa = reg.to_sym_fa::<StateImpl>();
+    let sfa = reg.to_sfa::<StateImpl>();
 
     assert!(sfa.run(&chars("abc")));
     assert!(sfa.run(&chars("kkk")));
     assert!(sfa.run(&chars("d")));
     assert!(sfa.run(&chars("x")));
-    assert!(!sfa.run(&chars("")));
+    assert!(sfa.run(&chars("")));
 
     assert!(!sfa.run(&chars("ab")));
     assert!(!sfa.run(&chars("kk")));
@@ -142,7 +142,7 @@ mod tests {
       .or(Reg::element('s'))
       .or(Reg::element('d'));
     let reg = reg1.inter(reg2);
-    let sfa = reg.to_sym_fa::<StateImpl>();
+    let sfa = reg.to_sfa::<StateImpl>();
 
     assert!(sfa.run(&chars("s")));
     assert!(sfa.run(&chars("d")));
@@ -165,7 +165,7 @@ mod tests {
       .concat(Reg::seq("abc").star())
       .concat(Reg::element('y').star());
     let reg = reg1.inter(reg2);
-    let sfa = reg.to_sym_fa::<StateImpl>();
+    let sfa = reg.to_sfa::<StateImpl>();
 
     assert!(sfa.run(&chars("abc")));
     assert!(sfa.run(&chars("xxabc")));
@@ -185,7 +185,7 @@ mod tests {
     let sfa = Reg::element('a')
       .or(Reg::element('b'))
       .not()
-      .to_sym_fa::<StateImpl>();
+      .to_sfa::<StateImpl>();
 
     assert!(sfa.run(&chars("")));
     assert!(sfa.run(&chars("c")));

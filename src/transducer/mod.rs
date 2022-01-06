@@ -3,6 +3,51 @@ pub mod sst_factory;
 pub mod term;
 pub mod transducer;
 
+pub(crate) fn to_update<
+  D: crate::util::Domain,
+  V: term::Variable,
+  F: term::FunctionTerm<Domain = D>,
+>(
+  output: &Vec<term::OutputComp<D, V>>,
+) -> Vec<term::UpdateComp<F, V>> {
+  output.into_iter().map(|out| out.clone().into()).collect()
+}
+
+mod macros {
+  macro_rules! make_update {
+    ( $( $var:ident -> $seq:expr ),* ) => {
+      HashMap::from([
+        $( (V::clone(&$var), $seq) ),*
+      ])
+    };
+  }
+
+  /* for readability need import SymSst */
+  macro_rules! sst {
+    ( { $( $state:ident ),+ },
+      $variables:expr,
+      {
+        -> $initial:ident
+        $(, ($source:ident, $predicate:expr) -> [$( ( $target:ident, $update:expr ) )*] ),*
+      },
+      { $( $fs:ident -> $output:expr ),* }
+    ) => {{
+      use crate::transducer::sst::SymSst;
+
+      let mut states = HashSet::new();
+      $( let $state = S::new(); states.insert(S::clone(&$state)); )+
+      let transition = HashMap::from([
+        $( ((S::clone(&$source), $predicate), vec![$( (S::clone(&$target), $update) ),*]) ),*
+      ]);
+      let output_function = HashMap::from([$( (S::clone(&$fs), $output) ),*]);
+      SymSst::new(states, $variables, $initial, output_function, transition)
+    }};
+  }
+
+  pub(crate) use make_update;
+  pub(crate) use sst;
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
   use super::*;
@@ -57,126 +102,174 @@ pub(crate) mod tests {
           (q.clone(), var_map)
         },
         move |possibilities| {
-          possibilities
-            .into_iter()
-            .filter_map(|(q, f)| {
-              self.output_function.get(&q).map(|seq| {
-                (
-                  seq
-                    .iter()
-                    .flat_map(|o| match o {
-                      OutputComp::A(a) => vec![a.clone()],
-                      OutputComp::X(x) => f.get(x).unwrap_or(&Vec::new()).clone(),
-                    })
-                    .collect::<Vec<_>>(),
-                  vars
-                    .into_iter()
-                    .map(move |var| (var.clone(), f[var].clone()))
-                    .collect(),
-                )
-              })
-            })
-            .collect()
+          let mut results = vec![];
+          possibilities.into_iter().for_each(|(q, f)| {
+            if let Some(output) = self.output_function.get(&q) {
+              let result = (
+                output
+                  .into_iter()
+                  .flat_map(|o| match o {
+                    OutputComp::A(a) => vec![a.clone()],
+                    OutputComp::X(x) => f.get(x).unwrap_or(&Vec::new()).clone(),
+                  })
+                  .collect::<Vec<_>>(),
+                vars
+                  .into_iter()
+                  .map(move |var| (var.clone(), f[var].clone()))
+                  .collect(),
+              );
+
+              if !results.contains(&result) {
+                results.push(result);
+              }
+            }
+          });
+          results
         },
       )
     }
   }
 
-  /*
-   * merge is used in generating whole sst and it is stil incomplete.
-   * so it is ok that there is ambiguity due to the separator.
-   */
+  /* dropping last char of vars_expect is required because of to_charwrap() implementation */
   macro_rules! check_merge {
     (
-      sst: $sst:ident,
+      sst: $sst:expr,
       vars: $vars:expr,
-      cases: [ $( $input:expr => ($output:expr, { $( $var:ident -> $var_expected:expr ),* }) ),+ ]
+      cases: [
+        $( $input:expr => ($output:expr, { $( $var:ident -> $var_expected:expr ),* }) ),+
+      ]
     ) => {
       $(
         let mut input = chars($input);
-        let results = $sst.run_with_var(&$vars, &input);
-        let expected = (chars($output), HashMap::from([
-          $( ($var.clone(), vec![]) ),*
-        ]));
-        assert!(results.into_iter().all(|seq| seq == expected));
         input.push(Domain::separator());
         let results = $sst.run_with_var(&$vars, &input);
         let output = chars($output);
         let expected = (output, HashMap::from([
           $( ($var.clone(), chars($var_expected)) ),*
         ]));
-        eprintln!("expected{:?}", expected);
-        eprintln!("results{:?}", results);
-        assert!(results.contains(&expected));
+        assert!({
+          let result = results.contains(&expected);
+          if !result {
+            eprintln!("{:#?}", $sst);
+            eprintln!("expected{:?}", expected);
+            eprintln!("results{:?}", results);
+          }
+          result
+        });
       )+
     };
     (
-      sst: $sst:ident,
+      sst: $sst:expr,
       vars: $vars:expr,
-      cases: [ $( $input:expr => ($output:expr, { $( $var:ident -> $var_expected:expr ),* }) ),+ ],
+      cases: [
+        $(
+          $input:expr => ( $output:expr, { $( $var:ident -> $var_expected:expr ),* } )
+        ),*
+      ],
+      $(
+        rejects: [
+          $(
+            $input_emp:expr
+          ),*
+        ],
+      )?
       wrap
     ) => {
       $(
         let input = to_charwrap($input);
         let results = $sst.run_with_var(&$vars, &input);
-        let mut output = to_charwrap($output);
-        output.pop();
+        let output = to_charwrap($output);
         let expected = (output, HashMap::from([
           $(
             (
               $var.clone(),
               {
-                let mut var_expected = to_charwrap($var_expected);
-                var_expected.pop();
-                var_expected
+                let v = to_charwrap($var_expected);
+                Vec::from(&v[..v.len().max(1) - 1])
               }
             )
           ),*
         ]));
-        eprintln!("expected{:?}", expected);
-        eprintln!("results{:?}", results);
-        assert!(results.contains(&expected));
-      )+
+        assert!({
+          let result = results.contains(&expected);
+          if !result {
+            eprintln!("{:#?}", $sst);
+            eprintln!("expected{:?}", expected);
+            eprintln!("results{:?}", results);
+          }
+          result
+        });
+      )*
+      $(
+        $(
+          let input = to_charwrap($input_emp);
+          let results = $sst.run_with_var(&$vars, &input);
+          assert!(results.is_empty());
+        )*
+      )?
     };
   }
 
-  //TODO -- ensure merge and chain work fine
   #[test]
   fn merge() {
-    let replace_from = Regex::seq("abc").or(Regex::seq("kkk"));
-    let replace_to = to_replacer("xyz");
+    let from = Regex::seq("abc").or(Regex::seq("kkk"));
+    let to = to_replacer("xyz");
 
     let rev = VariableImpl::new();
-    let rep_rev = Builder::replace_reg(replace_from.clone(), replace_to.clone())
-      .merge(Builder::reverse(), &rev);
-
-    eprintln!("{:?}\n{:?}", rep_rev, rev);
-
+    let sst =
+      Builder::identity(&VariableImpl::new()).merge(Builder::reverse(&VariableImpl::new()), &rev);
     check_merge! {
-      sst: rep_rev,
+      sst: sst,
       vars: HashSet::from([rev.clone()]),
       cases: [
         "" => ("", { rev -> "" }),
-        "abc" => ("xyz", { rev -> "cba" }),
-        "kkk" => ("xyz", { rev -> "kkk" }),
-        "ddabcee" => ("ddxyzee", { rev -> "eecbadd" }),
-        "abcababcbcc" => ("xyzababcbcc", { rev -> "ccbcbabacba" })
+        "abc" => ("abc", { rev -> "cba" }),
+        "kkk" => ("kkk", { rev -> "kkk" }),
+        "ddabcee" => ("ddabcee", { rev -> "eecbadd" }),
+        "abcababcbcc" => ("abcababcbcc", { rev -> "ccbcbabacba" })
       ]
     }
 
-    let rep = VariableImpl::new();
-    let id_all =
-      Builder::identity().merge(Builder::replace_all_reg(replace_from, replace_to), &rep);
-
+    let one = VariableImpl::new();
+    let sst = sst.merge(Builder::replace_reg(from.clone(), to.clone()), &one);
     check_merge! {
-      sst: id_all,
-      vars: HashSet::from([rep.clone()]),
+      sst: sst,
+      vars: HashSet::from([rev.clone(), one.clone()]),
       cases: [
-        "" => ("", { rep -> "" }),
-        "abc" => ("abc", { rep -> "xyz" }),
-        "kkk" => ("kkk", { rep -> "xyz" }),
-        "ddabcee" => ("ddabcee", { rep -> "ddxyzee" }),
-        "abcababcbcc" => ("abcababcbcc", { rep -> "xyzabxyzbcc" })
+        "" => ("", { rev -> "", one -> "" }),
+        "abc" => ("abc", { rev -> "cba", one -> "xyz" }),
+        "kkk" => ("kkk", { rev -> "kkk", one -> "xyz" }),
+        "ddabcee" => ("ddabcee", { rev -> "eecbadd", one -> "ddxyzee" }),
+        "abcababcbcc" => ("abcababcbcc", { rev -> "ccbcbabacba", one -> "xyzababcbcc" })
+      ]
+    }
+
+    let all = VariableImpl::new();
+    let sst = sst.merge(Builder::replace_all_reg(from, to), &all);
+    check_merge! {
+      sst: sst,
+      vars: HashSet::from([rev.clone(), one.clone(), all.clone()]),
+      cases: [
+        "" => (
+          "",
+          { rev -> "", one -> "", all -> "" }
+        ),
+        "abc" => (
+          "abc",
+          { rev -> "cba", one -> "xyz", all -> "xyz" }
+        ),
+        "kkk" => (
+          "kkk",
+          { rev -> "kkk", one -> "xyz", all -> "xyz" }
+        ),
+        "ddabcee" => (
+          "ddabcee",
+          { rev -> "eecbadd", one -> "ddxyzee", all -> "ddxyzee" }
+        ),
+        "abcababcbcc" => (
+          "abcababcbcc",
+          { rev -> "ccbcbabacba", one -> "xyzababcbcc", all -> "xyzabxyzbcc" }
+        )
       ]
     }
   }
@@ -184,65 +277,19 @@ pub(crate) mod tests {
   #[test]
   fn duplicating_correctly() {
     let mut vars = HashSet::new();
-    let sst = Builder::identity();
-    eprintln!(
-      "states len: {}, vars len: {}",
-      sst.states().len(),
-      sst.variables().len()
-    );
+    let result = VariableImpl::new();
+    vars.insert(VariableImpl::clone(&result));
+    let sst = Builder::identity(&result);
     assert!(sst.states().len() == 1 && sst.variables().len() == 1);
-    let var1 = VariableImpl::new();
-    vars.insert(var1.clone());
-    let sst = sst.merge(Builder::identity(), &var1);
-    eprintln!(
-      "states len: {}, vars len: {}",
-      sst.states().len(),
-      sst.variables().len()
-    );
-    /*
-     * variables len is id's var = 1 + id's var = 1 + var1 = 3
-     * such rebunduned var is not produced when used by SstBuilder
-     */
-    assert!(sst.states().len() == 1 && sst.variables().len() == 3);
+    let sst = sst.merge(Builder::constant("abc"), &result);
+    let sst_ = sst.clone();
     check_merge! {
-      sst: sst,
-      vars: vars,
+      sst: sst_,
+      vars: HashSet::new(),
       cases: [
-        "xyz" => ("xyz", { var1 -> "xyz" })
+        "xyz" => ("xyzabc", {})
       ]
-    }
-    let var2 = VariableImpl::new();
-    vars.insert(var2.clone());
-    let sst = sst.merge(Builder::identity(), &var2);
-    eprintln!(
-      "states len: {}, vars len: {}",
-      sst.states().len(),
-      sst.variables().len()
-    );
-    assert!(sst.states().len() == 1 && sst.variables().len() == 5);
-    check_merge! {
-      sst: sst,
-      vars: vars,
-      cases: [
-        "xyz" => ("xyz", { var1 -> "xyz", var2 -> "xyz" })
-      ]
-    }
-    let var3 = VariableImpl::new();
-    vars.insert(var3.clone());
-    let sst = sst.merge(Builder::identity(), &var3);
-    eprintln!(
-      "states len: {}, vars len: {}",
-      sst.states().len(),
-      sst.variables().len()
-    );
-    assert!(sst.states().len() == 1 && sst.variables().len() == 7);
-    check_merge! {
-      sst: sst,
-      vars: vars,
-      cases: [
-        "xyz" => ("xyz", { var1 -> "xyz", var2 -> "xyz", var3 -> "xyz" })
-      ]
-    }
+    };
   }
 
   #[test]
@@ -253,41 +300,60 @@ pub(crate) mod tests {
     let var = VariableImpl::new();
     let vars = HashSet::from([var.clone()]);
 
-    let sst = Builder::identity().merge(
-      Builder::replace_reg(replace_from.clone(), replace_to.clone()),
-      &var,
-    );
-    eprintln!("{:#?}", sst);
+    let sst = Builder::identity(&VariableImpl::new())
+      .merge(Builder::replace_reg(replace_from, replace_to), &var);
+    let sst_ = sst.clone().chain_output(vec![], HashSet::new());
     check_merge! {
-      sst: sst,
+      sst: sst_,
       vars: vars,
       cases: [
-        &["abcabc"] => (&["abcabc"], { var -> &["xyzabc"] })
+        &["abcabc"] => (&["abcabc"], { var -> &["xyzabc"] }),
+        &["abdkkkkhjkkkk"] => (&["abdkkkkhjkkkk"], { var -> &["abdxyzkhjkkkk"] })
       ],
+      rejects: [],
       wrap
     }
-    let sst = sst.chain(Builder::reverse());
-    //eprintln!("{:#?}", sst);
+    let sst = sst.chain(Builder::reverse(&VariableImpl::new()));
+    let sst_ = sst.clone().chain_output(vec![], HashSet::new());
     check_merge! {
-      sst: sst,
+      sst: sst_,
       vars: vars,
       cases: [
-        &["abcabc", "edf"] => (&["abcabc", "fde"], { var -> &["xyzabc"] })
-      ],
-      wrap
-    }
-
-    let sst = sst.chain(Builder::replace_all_reg(replace_from, replace_to));
-    //eprintln!("{:#?}", sst);
-    check_merge! {
-      sst: sst,
-      vars: vars,
-      cases: [
-        &[] => (&[], { var -> &[] }),
-        &["abcabc", "abcabc", "abcabc"] => (
-          &["abcabc", "cbacba", "xyzxyz"], { var -> &["xyzabc"] }
+        &["abcabc", "edf"] => (&["abcabc", "fde"], { var -> &["xyzabc"] }),
+        &["abdkkkkhjkkkk", "palindromemordnilap"] => (
+          &["abdkkkkhjkkkk", "palindromemordnilap"], { var -> &["abdxyzkhjkkkk"] }
         )
       ],
+      rejects: [ &["aaaa"], &["abdkkkkhjkkkk"] ],
+      wrap
+    }
+    let replace_from = Regex::seq("start1")
+      .or(Regex::seq("start2"))
+      .concat(Regex::all().star())
+      .concat(Regex::seq("end"));
+    let replace_to = to_replacer("");
+    let sst = sst.chain(Builder::replace_all_reg(replace_from, replace_to));
+    let sst_ = sst.chain_output(vec![], HashSet::new());
+    check_merge! {
+      sst: sst_,
+      vars: vars,
+      cases: [
+        &["abcabc", "abcabc", "abcabc"] => (
+          &["abcabc", "cbacba", "abcabc"], { var -> &["xyzabc"] }
+        ),
+        &[
+          "abdkkkkhjkkkk",
+          "palindromemordnilap",
+          "nottrancate,start1trancate1end,start2trancate2end,nottrancate"
+        ] => (
+          &[
+            "abdkkkkhjkkkk",
+            "palindromemordnilap",
+            "nottrancate,,,nottrancate"
+          ], { var -> &["abdxyzkhjkkkk"] }
+        )
+      ],
+      rejects: [ &["aaaa", "aaaa"] ],
       wrap
     }
   }

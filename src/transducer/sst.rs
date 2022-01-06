@@ -1,7 +1,10 @@
-use super::term::{FunctionTerm, FunctionTermImpl, Lambda, OutputComp, UpdateComp, Variable};
+use super::term::{FunctionTerm, FunctionTermImpl, OutputComp, UpdateComp, Variable};
 use crate::boolean_algebra::{BoolAlg, Predicate};
 use crate::state::{self, State, StateMachine};
-use crate::util::Domain;
+use crate::util::{
+  extention::{ImmutableValueMap, MultiMap},
+  Domain,
+};
 use std::{
   collections::{HashMap, HashSet},
   fmt::Debug,
@@ -15,8 +18,9 @@ type Transition<B, F, S, V> = HashMap<Source<B, S>, Vec<Target<F, S, V>>>;
 
 /** implementation of symbolic streaming string transducer (SSST) */
 #[derive(Debug, PartialEq, Clone)]
-pub struct SymSST<D, B, F, S, V>
+pub struct SymSst<D, B, F, S, V>
 where
+  D: Domain,
   B: BoolAlg<Domain = D>,
   F: FunctionTerm<Domain = D>,
   S: State,
@@ -32,7 +36,7 @@ where
    */
   pub(crate) transition: Transition<B, F, S, V>,
 }
-impl<D, B, F, S, V> SymSST<D, B, F, S, V>
+impl<D, B, F, S, V> SymSst<D, B, F, S, V>
 where
   D: Domain,
   B: BoolAlg<Domain = D>,
@@ -74,7 +78,7 @@ where
 
     self.generalized_run(
       input.into_iter(),
-      vec![(self.initial_state.clone(), initial_map)],
+      vec![(S::clone(&self.initial_state), initial_map)],
       &mut |(_, map), c, (q, alpha)| {
         let var_map = self
           .variables
@@ -98,21 +102,23 @@ where
         (S::clone(q), var_map)
       },
       |possibilities| {
-        possibilities
-          .into_iter()
-          .filter_map(|(q, f)| {
-            self.output_function.get(&q).map(|w| {
-              w.iter()
-                .flat_map(|o| match o {
-                  OutputComp::A(a) => vec![D::clone(a)],
-                  OutputComp::X(x) => f.get(x).unwrap_or(&Vec::new()).clone(),
-                })
-                .collect::<Vec<_>>()
-            })
-          })
-          .collect::<HashSet<_>>()
-          .into_iter()
-          .collect()
+        let mut results = vec![];
+        possibilities.into_iter().for_each(|(q, f)| {
+          if let Some(output) = self.output_function.get(&q) {
+            let result = output
+              .into_iter()
+              .flat_map(|o| match o {
+                OutputComp::A(a) => vec![D::clone(a)],
+                OutputComp::X(x) => f.get(x).unwrap_or(&Vec::new()).clone(),
+              })
+              .collect();
+
+            if !results.contains(&result) {
+              results.push(result);
+            }
+          }
+        });
+        results
       },
     )
   }
@@ -120,13 +126,7 @@ where
   pub fn variables(&self) -> &HashSet<V> {
     &self.variables
   }
-}
-impl<D, S, V> SymSST<D, Predicate<D>, FunctionTermImpl<D>, S, V>
-where
-  D: Domain,
-  S: State,
-  V: Variable,
-{
+
   /**
    * merging two sst.
    * output function is first one's,
@@ -140,7 +140,7 @@ where
 
     let Self {
       states: s1,
-      variables: v1,
+      mut variables,
       initial_state: i1,
       output_function: o1,
       transition: t1,
@@ -154,89 +154,78 @@ where
       transition: t2,
     } = other;
 
-    let cartesian = s1
+    let cartesian: HashMap<_, _> = s1
       .iter()
       .flat_map(|p| s2.iter().map(move |q| ((p, q), S::new())))
-      .collect::<HashMap<_, _>>();
+      .collect();
 
-    let initial_state = cartesian.get(&(&i1, &i2)).expect(error_msg).clone();
+    let initial_state = S::clone(cartesian.get(&(&i1, &i2)).expect(error_msg));
 
-    let mut variables = v1.into_iter().chain(v2.into_iter()).collect::<HashSet<_>>();
+    variables.extend(v2.into_iter());
     variables.insert(V::clone(result));
 
-    let mut output_function = HashMap::new();
-    let mut transition: Transition<Predicate<D>, FunctionTermImpl<D>, S, V> = t1
+    let mut transition: Transition<B, F, S, V> = t1
       .iter()
       .flat_map(|((p1, phi1), v1)| {
         t2.iter()
           .map(|((p2, phi2), v2)| {
-            let p = S::clone(cartesian.get(&(p1, p2)).expect(error_msg));
-            let v = v1
+            let source = S::clone(cartesian.get(&(p1, p2)).expect(error_msg));
+            let target = v1
               .into_iter()
               .flat_map(|(q1, u1)| {
                 v2.into_iter()
                   .map(|(q2, u2)| {
-                    let q = S::clone(cartesian.get(&(q1, q2)).expect(error_msg));
+                    let target = S::clone(cartesian.get(&(q1, q2)).expect(error_msg));
 
-                    let u = u1
+                    let update = u1
                       .iter()
                       .chain(u2.into_iter())
                       .map(|(v, uc)| (V::clone(&v), uc.clone()))
-                      .collect::<HashMap<_, _>>();
+                      .collect();
 
-                    (q, u)
+                    (target, update)
                   })
                   .collect::<Vec<_>>()
               })
               .collect();
 
-            ((p, phi1.and(phi2)), v)
+            ((source, phi1.and(phi2)), target)
           })
           .collect::<Vec<_>>()
       })
       .collect();
 
-    for (fs1, o1) in o1.iter() {
-      for (fs2, o2) in o2.iter() {
+    let mut output_function = HashMap::new();
+    o1.iter().for_each(|(fs1, output1)| {
+      o2.iter().for_each(|(fs2, output2)| {
         let fs = cartesian.get(&(fs1, fs2)).expect(error_msg);
 
-        output_function.insert(S::clone(fs), o1.clone());
+        output_function.insert(S::clone(fs), output1.clone());
 
-        if let Some(target) = transition.get_mut(&(S::clone(fs), Predicate::char(D::separator()))) {
-          for (_, update) in target {
-            update.insert(
-              V::clone(result),
-              o2.into_iter()
-                .map(|out| match out {
-                  OutputComp::A(a) => UpdateComp::F(Lambda::constant(D::clone(a))),
-                  OutputComp::X(var) => UpdateComp::X(V::clone(var)),
-                })
-                .collect(),
-            );
-          }
+        let target = transition
+          .entry((S::clone(fs), B::char(D::separator())))
+          .or_default();
+        if target.is_empty() {
+          let mut update_seq = vec![UpdateComp::X(V::clone(result))];
+          update_seq.extend(super::to_update(output2));
+          target.push((
+            S::clone(fs),
+            super::macros::make_update! {
+              result -> update_seq
+            },
+          ));
         } else {
-          transition.insert(
-            (S::clone(fs), Predicate::char(D::separator())),
-            vec![(
-              S::clone(fs),
-              HashMap::from([(
-                V::clone(result),
-                o2.into_iter()
-                  .map(|out| match out {
-                    OutputComp::A(a) => UpdateComp::F(Lambda::constant(D::clone(a))),
-                    OutputComp::X(var) => UpdateComp::X(V::clone(var)),
-                  })
-                  .collect(),
-              )]),
-            )],
-          );
+          target.iter_mut().for_each(|(_, update)| {
+            let update_seq = update.entry(V::clone(result)).or_insert(vec![]);
+            update_seq.extend(super::to_update(output2));
+          });
         }
-      }
-    }
+      });
+    });
 
     let states = cartesian.into_values().collect();
 
-    Sst::new(
+    Self::new(
       states,
       variables,
       initial_state,
@@ -250,15 +239,15 @@ where
    * link them togeher and separating with T::separator
    */
   pub(crate) fn chain(self, other: Self) -> Self {
-    let SymSST {
-      states: s1,
-      variables: v1,
+    let Self {
+      mut states,
+      mut variables,
       initial_state,
       output_function: o1,
-      transition: t1,
+      mut transition,
     } = self;
 
-    let SymSST {
+    let Self {
       states: s2,
       variables: v2,
       initial_state: i2,
@@ -266,90 +255,24 @@ where
       transition: t2,
     } = other;
 
-    let states = s1.into_iter().chain(s2.into_iter()).collect();
-
-    let mut variables = v1.into_iter().chain(v2.into_iter()).collect::<HashSet<_>>();
+    states.extend(s2.into_iter());
+    variables.extend(v2.into_iter());
     let res_of_self = V::new();
 
-    let mut res_vars = HashSet::new();
-    res_vars.insert(V::clone(&res_of_self));
-    for (fs1, _) in o1.iter() {
-      if let Some(target) = t1.get(&(S::clone(fs1), Predicate::char(D::separator()))) {
-        for (_, u) in target {
-          for var in u.keys() {
-            res_vars.insert(V::clone(var));
-          }
-        }
-      }
-    }
-
-    let joint = o1.into_iter().map(|(fs1, out)| {
-      let joint;
-      if let Some(target) = t1.get(&(S::clone(&fs1), Predicate::char(D::separator()))) {
-        joint = target
-          .iter()
-          .map(|(_, u)| {
-            let mut u = u.clone();
-            u.insert(
-              V::clone(&res_of_self),
-              out
-                .iter()
-                .map(|oc| match oc {
-                  OutputComp::A(a) => UpdateComp::F(Lambda::constant(D::clone(a))),
-                  OutputComp::X(var) => UpdateComp::X(V::clone(var)),
-                })
-                .collect(),
-            );
-            (S::clone(&i2), u)
-          })
-          .collect();
-      } else {
-        joint = vec![(
-          S::clone(&i2),
-          HashMap::from([(
-            V::clone(&res_of_self),
-            out
-              .into_iter()
-              .map(|oc| match oc {
-                OutputComp::A(a) => UpdateComp::F(Lambda::constant(a)),
-                OutputComp::X(var) => UpdateComp::X(var),
-              })
-              .collect(),
-          )]),
-        )]
-      }
-
-      ((fs1, Predicate::char(D::separator())), joint)
+    transition.extend(t2.into_iter());
+    o1.into_iter().for_each(|(fs1, out)| {
+      let target = transition
+        .entry((fs1, B::char(D::separator())))
+        .or_insert(vec![(S::clone(&i2), HashMap::new())]);
+      target.iter_mut().for_each(|(s, u)| {
+        *s = S::clone(&i2);
+        u.safe_insert(V::clone(&res_of_self), super::to_update(&out));
+      });
     });
-
-    let extend_transition = |((p, phi), target): (
-      Source<Predicate<D>, S>,
-      Vec<Target<FunctionTermImpl<D>, S, V>>,
-    )| {
-      (
-        (p, phi),
-        target
-          .into_iter()
-          .map(|(q, mut u)| {
-            res_vars.iter().for_each(|var| {
-              u.insert(V::clone(&var), vec![UpdateComp::X(V::clone(&var))]);
-            });
-            (q, u)
-          })
-          .collect(),
-      )
-    };
-
-    let transition = t2
-      .into_iter()
-      .map(extend_transition)
-      .chain(t1.iter().map(|(src, trg)| (src.clone(), trg.clone())))
-      .chain(joint)
-      .collect();
 
     let output_function = o2
       .into_iter()
-      .map(|(fs, out)| {
+      .map(|(fs, output)| {
         (
           fs,
           [
@@ -358,7 +281,7 @@ where
           ]
           .iter() //https://doc.rust-lang.org/nightly/edition-guide/rust-2021/IntoIterator-for-arrays.html
           .cloned()
-          .chain(out.into_iter())
+          .chain(output.into_iter())
           .collect(),
         )
       })
@@ -366,7 +289,7 @@ where
 
     variables.insert(res_of_self);
 
-    SymSST::new(
+    Self::new(
       states,
       variables,
       initial_state,
@@ -374,8 +297,17 @@ where
       transition,
     )
   }
+
+  pub fn chain_output(self, output: Output<D, V>, vars: HashSet<V>) -> Self {
+    self.chain(super::macros::sst! {
+      { state },
+      vars,
+      { -> state },
+      { state -> output }
+    })
+  }
 }
-impl<D, B, F, S, V> StateMachine for SymSST<D, B, F, S, V>
+impl<D, B, F, S, V> StateMachine for SymSst<D, B, F, S, V>
 where
   D: Domain,
   B: BoolAlg<Domain = D>,
@@ -396,11 +328,11 @@ where
       variables: HashSet::new(),
       initial_state: S::clone(&state),
       output_function: HashMap::from([(S::clone(&state), vec![])]),
-      transition: HashMap::new(),
+      transition: HashMap::from([((S::clone(&state), B::top()), vec![(state, HashMap::new())])]),
     }
   }
 
   state::macros::impl_state_machine!(states, initial_state, output_function, transition);
 }
 
-pub type Sst<T, S, V> = SymSST<T, Predicate<T>, FunctionTermImpl<T>, S, V>;
+pub type Sst<T, S, V> = SymSst<T, Predicate<T>, FunctionTermImpl<T>, S, V>;

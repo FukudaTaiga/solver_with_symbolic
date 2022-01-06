@@ -2,7 +2,7 @@ use super::recognizable::Recognizable;
 use crate::boolean_algebra::{BoolAlg, Predicate};
 use crate::state::{self, State, StateMachine};
 use crate::transducer::{
-  sst::SymSST,
+  sst::SymSst,
   term::{OutputComp, UpdateComp, Variable},
 };
 use crate::util::{extention::MultiMap, Domain};
@@ -25,18 +25,32 @@ type Target<S> = Vec<S>;
  * each operation like concat, or, ... corresponds to regex's one.
  */
 #[derive(Debug, PartialEq, Clone)]
-pub struct SymFA<D, B, S>
+pub struct SymFa<D, B, S>
 where
   D: Domain,
   B: BoolAlg<Domain = D>,
   S: State,
 {
-  pub states: HashSet<S>,
-  pub initial_state: S,
-  pub final_states: HashSet<S>,
-  pub transition: HashMap<Source<S, B>, Target<S>>,
+  pub(crate) states: HashSet<S>,
+  pub(crate) initial_state: S,
+  pub(crate) final_states: HashSet<S>,
+  pub(crate) transition: HashMap<Source<S, B>, Target<S>>,
 }
-impl<D, B, S> SymFA<D, B, S>
+impl<D, B, S> Default for SymFa<D, B, S>
+where
+  D: Domain,
+  B: BoolAlg<Domain = D>,
+  S: State,
+{
+  fn default() -> Self {
+    super::macros::sfa! {
+      { state },
+      { -> state, (state, B::top()) -> [state] },
+      { state }
+    }
+  }
+}
+impl<D, B, S> SymFa<D, B, S>
 where
   D: Domain,
   B: BoolAlg<Domain = D>,
@@ -66,7 +80,7 @@ where
       target.push(p2);
     }
 
-    SymFA {
+    Self {
       states,
       initial_state,
       final_states,
@@ -92,6 +106,34 @@ where
     )
   }
 
+  pub fn accepted_path(self) -> Option<Vec<B>> {
+    let mut result = None;
+    let mut paths = vec![(self.initial_state(), vec![])];
+    while let Some((state, path)) = paths.pop() {
+      if self.final_set().contains(state) {
+        result = Some(path);
+        break;
+      }
+
+      paths.extend(
+        self
+          .transition()
+          .into_iter()
+          .flat_map(|((p, phi), target)| {
+            if *p == *state {
+              let mut path = path.clone();
+              path.push(phi.clone());
+              target.into_iter().map(|q| (q, path.clone())).collect()
+            } else {
+              vec![]
+            }
+          }),
+      );
+    }
+
+    result
+  }
+
   pub fn state_predicate(&self, q: &S) -> B {
     self
       .transition
@@ -101,49 +143,47 @@ where
   }
 
   pub fn concat(self, other: Self) -> Self {
-    let SymFA {
-      states: s1,
+    let Self {
+      mut states,
       initial_state,
       final_states: f1,
       mut transition,
     } = self;
 
-    let SymFA {
+    let Self {
       states: s2,
       initial_state: i2,
-      final_states: f2,
+      mut final_states,
       transition: t2,
     } = other;
 
-    let states = s1.union(&s2).cloned().collect();
+    states.extend(s2.into_iter());
 
-    for ((state2, phi2), next2) in t2.into_iter() {
-      if state2 == i2 {
-        for final_state in f1.iter() {
-          transition.insert_with_check((S::clone(&final_state), phi2.clone()), next2.clone());
-        }
+    t2.into_iter().for_each(|((state, phi), target)| {
+      if state == i2 {
+        f1.iter().for_each(|final_state| {
+          transition.insert_with_check((S::clone(&final_state), phi.clone()), target.clone());
+        });
       }
-      transition.insert_with_check((state2, phi2), next2);
+      transition.insert_with_check((state, phi), target);
+    });
+
+    if final_states.contains(&i2) {
+      final_states.extend(f1.into_iter());
     }
 
-    let final_states = if f2.contains(&i2) {
-      f2.union(&f1).cloned().collect()
-    } else {
-      f2
-    };
-
-    SymFA::new(states, initial_state, final_states, transition)
+    Self::new(states, initial_state, final_states, transition)
   }
 
   pub fn or(self, other: Self) -> Self {
-    let SymFA {
-      states: s1,
+    let Self {
+      mut states,
       initial_state: i1,
-      final_states: f1,
+      mut final_states,
       transition: t1,
     } = self;
 
-    let SymFA {
+    let Self {
       states: s2,
       initial_state: i2,
       final_states: f2,
@@ -151,52 +191,53 @@ where
     } = other;
 
     let initial_state = S::new();
-    let mut states: HashSet<_> = s1.union(&s2).cloned().collect();
+
+    states.extend(s2.into_iter());
     states.insert(S::clone(&initial_state));
-    let final_states: HashSet<_> = f1.union(&f2).cloned().collect();
 
-    let mut transition = HashMap::new();
-
-    for ((state, phi), next) in t1.into_iter() {
-      if state == i1 {
-        transition.insert((S::clone(&initial_state), phi.clone()), Vec::clone(&next));
-      }
-
-      transition.insert((state, phi), next);
+    final_states.extend(f2.into_iter());
+    if final_states.contains(&i1) || final_states.contains(&i2) {
+      final_states.insert(S::clone(&initial_state));
     }
 
-    for ((state, phi), target) in t2.into_iter() {
+    let mut transition = HashMap::new();
+    t1.into_iter().for_each(|((state, phi), target)| {
+      if state == i1 {
+        transition.insert((S::clone(&initial_state), phi.clone()), target.clone());
+      }
+      transition.insert((state, phi), target);
+    });
+    t2.into_iter().for_each(|((state, phi), target)| {
       if state == i2 {
         transition.insert_with_check((S::clone(&initial_state), phi.clone()), target.clone());
       }
-
       transition.insert((state, phi), target);
-    }
+    });
 
-    SymFA::new(states, initial_state, final_states, transition)
+    Self::new(states, initial_state, final_states, transition)
   }
 
   pub fn inter(self, other: Self) -> Self {
     let error_msg = "Uncontrolled states exist. this will happen for developper's error";
 
-    let SymFA {
+    let Self {
       states: s1,
       initial_state: i1,
       final_states: f1,
       transition: t1,
     } = self;
 
-    let SymFA {
+    let Self {
       states: s2,
       initial_state: i2,
       final_states: f2,
       transition: t2,
     } = other;
 
-    let cartesian = s1
+    let cartesian: HashMap<_, _> = s1
       .iter()
       .flat_map(|p| s2.iter().map(move |q| ((p, q), S::new())))
-      .collect::<HashMap<_, _>>();
+      .collect();
 
     let final_states = cartesian
       .iter()
@@ -204,38 +245,38 @@ where
       .collect();
 
     let mut transition = HashMap::new();
-
-    for ((p1, phi1), q1) in &t1 {
-      for ((p2, phi2), q2) in &t2 {
+    t1.iter().for_each(|((p1, phi1), target1)| {
+      t2.iter().for_each(|((p2, phi2), target2)| {
         let p = S::clone(cartesian.get(&(p1, p2)).expect(error_msg));
-        let target: Vec<_> = q1
+        let target: Vec<_> = target1
           .into_iter()
           .flat_map(|s1| {
-            q2.into_iter()
+            target2
+              .into_iter()
               .map(|s2| S::clone(cartesian.get(&(s1, s2)).expect(error_msg)))
               .collect::<Vec<_>>()
           })
           .collect();
 
         transition.insert_with_check((p, phi1.and(phi2)), target);
-      }
-    }
+      })
+    });
 
-    let initial_state = cartesian.get(&(&i1, &i2)).expect(error_msg).clone();
+    let initial_state = S::clone(cartesian.get(&(&i1, &i2)).expect(error_msg));
 
     let states = cartesian.into_values().collect();
 
-    SymFA::new(states, initial_state, final_states, transition)
+    Self::new(states, initial_state, final_states, transition)
   }
 
   pub fn not(self) -> Self {
-    let not_predicates = self
+    let not_predicates: HashMap<_, _> = self
       .states
       .iter()
       .map(|state| (S::clone(state), self.state_predicate(state).not()))
-      .collect::<HashMap<_, _>>();
+      .collect();
 
-    let SymFA {
+    let Self {
       mut states,
       initial_state,
       final_states,
@@ -245,12 +286,12 @@ where
     let mut final_states = &states - &final_states;
     let dead_state = S::new();
 
-    for state in &states {
+    states.iter().for_each(|state| {
       transition.insert(
         (S::clone(state), not_predicates.get(state).unwrap().clone()),
         vec![S::clone(&dead_state)],
       );
-    }
+    });
     transition.insert(
       (S::clone(&dead_state), B::all_char()),
       vec![S::clone(&dead_state)],
@@ -259,11 +300,11 @@ where
     states.insert(S::clone(&dead_state));
     final_states.insert(dead_state);
 
-    SymFA::new(states, initial_state, final_states, transition)
+    Self::new(states, initial_state, final_states, transition)
   }
 
   pub fn star(self) -> Self {
-    let SymFA {
+    let Self {
       mut states,
       initial_state: i,
       mut final_states,
@@ -271,33 +312,35 @@ where
     } = self;
 
     let initial_state = S::new();
-
     states.insert(S::clone(&initial_state));
-
     final_states.insert(S::clone(&initial_state));
 
     let mut transition = HashMap::new();
-
-    for ((state, phi), target) in t.into_iter() {
+    t.into_iter().for_each(|((state, phi), target)| {
       if state == i {
-        for final_state in final_states.iter() {
+        final_states.iter().for_each(|final_state| {
           transition.insert_with_check((S::clone(final_state), phi.clone()), target.clone());
-        }
+        });
         transition.insert((S::clone(&initial_state), phi.clone()), target.clone());
       }
-
       transition.insert((state, phi), target);
-    }
+    });
 
-    SymFA::new(states, initial_state, final_states, transition)
+    Self::new(states, initial_state, final_states, transition)
   }
 
-  pub fn pre_image<V: Variable>(self, sst: SymSST<D, B, <B as BoolAlg>::Term, S, V>) -> Self {
-    eprintln!("{:?}\n", sst);
+  pub fn pre_image<V: Variable>(self, sst: SymSst<D, B, B::Term, S, V>) -> Self {
+    eprintln!("preimage");
     let mut states = HashMap::new();
     let mut initial_states = HashSet::new();
     let mut transition: HashMap<_, Vec<_>> = HashMap::new();
     let mut final_states = HashSet::new();
+
+    let reachables: HashMap<_, _> = self
+      .states()
+      .into_iter()
+      .map(|s| (s, self.reachables(s)))
+      .collect();
 
     let mut stack = vec![];
 
@@ -309,14 +352,14 @@ where
         $possibilities
           .into_iter()
           .flat_map(|($curr, $var_map, $($others),*)| {
-            self.states.iter().map(move |next| {
-              let mut $var_map = $var_map.clone();
-              let target = $var_map.entry(($curr, $var_name)).or_insert(vec![]);
-              if target.contains(&next) {
-                (next, $var_map, $($others.clone()),*)
+            reachables.get(&$curr).unwrap().into_iter().map(move |next| {
+              let mut var_map = $var_map.clone();
+              let target = var_map.entry(($curr, $var_name)).or_insert(vec![]);
+              if target.contains(next) {
+                (*next, var_map, $($others.clone()),*)
               } else {
                 target.push(next);
-                (next, $var_map, $($others.clone()),*)
+                (*next, var_map, $($others.clone()),*)
               }
             })
           })
@@ -326,6 +369,7 @@ where
 
     for (q, output) in sst.final_set() {
       let mut possibilities = vec![(&self.initial_state, HashMap::new())];
+
       for oc in output {
         match oc {
           OutputComp::A(a) => {
@@ -339,7 +383,7 @@ where
         }
       }
 
-      for (p, var_map) in possibilities {
+      possibilities.into_iter().for_each(|(p, var_map)| {
         if self.final_states.contains(p) {
           let mut var_map: Vec<_> = var_map.into_iter().collect();
           var_map.sort();
@@ -351,10 +395,23 @@ where
             new_state
           });
         }
-      }
+      });
     }
 
+    eprintln!("start searching");
+
     while let Some(tuple) = stack.pop() {
+      #[cfg(test)]
+      {
+        if states.len() > 200 {
+          eprintln!("states: {:?}", states);
+          // eprintln!("transition: {:?}", transition);
+          // eprintln!("initial_s: {:?}", initial_states);
+          // eprintln!("final_states: {:?}", final_states);
+          panic!("psedo stack overflow");
+        }
+      }
+
       let next = S::clone(states.get(&tuple).unwrap());
       let (q, var_map) = tuple;
 
@@ -391,7 +448,10 @@ where
                * if update function has no corresponding output, update with identity function
                * i.e. update(var) = vec![UpdateComp::X(var)]
                */
-              possibilities = step_with_var!(possibilities, var, |curr, var_map, var_phi|);
+              possibilities = nexts
+                .into_iter()
+                .map(|next| (*next, HashMap::from([((*p1, *var), vec![*next])]), B::top()))
+                .collect();
             }
 
             /*
@@ -412,16 +472,15 @@ where
               .collect();
 
             if is_nexts_covered == 0 {
-              for (p, var_map, var_phi) in possibilities {
+              possibilities.into_iter().for_each(|(p, var_map, var_phi)| {
                 let p_phi = phi.entry((*p1, *var, p)).or_insert(B::bot());
                 *p_phi = p_phi.or(&var_phi);
                 pre_maps.insert_with_check(*var, [var_map]);
-              }
+              })
             } else {
               continue 'add_update;
             }
           }
-          eprintln!();
 
           let phi = phi
             .into_values()
@@ -451,7 +510,7 @@ where
               combination
             };
 
-            for pre_map in pre_maps {
+            pre_maps.into_iter().for_each(|pre_map| {
               let tuple = (q1, pre_map.into_iter().collect());
               let source_state = match states.get(&tuple) {
                 Some(s) => S::clone(s),
@@ -467,7 +526,7 @@ where
 
               let source = (source_state, phi.clone());
               transition.insert_with_check(source, [S::clone(&next)]);
-            }
+            });
           }
         }
       }
@@ -481,6 +540,8 @@ where
       }
     }
 
+    eprintln!("finish searching");
+
     let mut states: HashSet<_> = states.into_values().collect();
     let initial_state = S::new();
 
@@ -489,26 +550,43 @@ where
     let transition_ = transition;
     let mut transition = HashMap::new();
 
-    for ((s1, phi), target) in transition_.into_iter() {
-      if initial_states.contains(&s1) {
+    transition_.into_iter().for_each(|((state, phi), target)| {
+      if initial_states.contains(&state) {
         transition.insert_with_check((S::clone(&initial_state), phi.clone()), target.clone());
       }
-
-      transition.insert((s1, phi), target);
-    }
+      transition.insert((state, phi), target);
+    });
 
     if initial_states.intersection(&final_states).next().is_some() {
       final_states.insert(S::clone(&initial_state));
     }
 
     if initial_states.is_empty() {
-      SymFA::empty()
+      Self::empty()
     } else {
-      SymFA::new(states, initial_state, final_states, transition)
+      Self::new(states, initial_state, final_states, transition)
     }
   }
+
+  pub fn chain(self, other: Self) -> Self {
+    self
+      .concat(super::macros::sfa! {
+        { dead, joint },
+        { -> dead, (dead, B::char(D::separator())) -> [joint] },
+        { joint }
+      })
+      .concat(other)
+  }
+
+  pub fn finish(self) -> Self {
+    self.concat(super::macros::sfa! {
+      { dead, joint },
+      { -> dead, (dead, B::char(D::separator())) -> [joint] },
+      { joint }
+    })
+  }
 }
-impl<D, B, S> Recognizable<D> for SymFA<D, B, S>
+impl<D, B, S> Recognizable<D> for SymFa<D, B, S>
 where
   D: Domain,
   B: BoolAlg<Domain = D>,
@@ -518,7 +596,7 @@ where
     self.run(input)
   }
 }
-impl<D, B, S> StateMachine for SymFA<D, B, S>
+impl<D, B, S> StateMachine for SymFa<D, B, S>
 where
   D: Domain,
   B: BoolAlg<Domain = D>,
@@ -544,7 +622,7 @@ where
   state::macros::impl_state_machine!(states, initial_state, final_states, transition);
 }
 
-pub type Sfa<T, S> = SymFA<T, Predicate<T>, S>;
+pub type Sfa<T, S> = SymFa<T, Predicate<T>, S>;
 
 #[cfg(test)]
 mod tests {
@@ -555,6 +633,100 @@ mod tests {
   use crate::{boolean_algebra::Predicate, tests::helper::*};
 
   type Builder = SstBuilder<CharWrap, StateImpl, VariableImpl>;
+  type Reg = Regex<CharWrap>;
+
+  macro_rules! basics {
+    (
+      names: [$id:ident, $cnst:ident, $rev:ident],
+      reg: $reg:expr,
+      id: {
+        accepts: [$( $id_ac:expr ),*],
+        rejects: [$( $id_re:expr ),*]
+      },
+      constant: $constant:expr => {
+        accepts: [$( $cnst_ac:expr ),*], /* inputs havent been changed */
+        rejects: [$( $cnst_re:expr ),*]
+      },
+      rev: {
+        accepts: [$( $rev_ac:expr ),*], /* inputs havent been changed */
+        rejects: [$( $rev_re:expr ),*]
+      }
+    ) => {
+      #[test]
+      fn $id() {
+        let sst = Builder::identity(&VariableImpl::new());
+        let sfa = $reg.to_sfa();
+        eprintln!("{:?}", sfa);
+        $( assert!(sfa.run(&chars($id_ac))); )*
+        $( assert!(!sfa.run(&chars($id_re))); )*
+        let pre_image = sfa.pre_image(sst);
+        eprintln!("{:?}", pre_image);
+        $( assert!(pre_image.run(&chars($id_ac))); )*
+        $( assert!(!pre_image.run(&chars($id_re))); )*
+      }
+
+      #[test]
+      fn $cnst() {
+          let sst = Builder::constant($constant);
+          let sfa = $reg.to_sfa();
+          let pre_image = sfa.pre_image(sst);
+          eprintln!("{:?}", pre_image);
+          $( assert!(pre_image.run(&chars($cnst_ac))); )*
+          $( assert!(!pre_image.run(&chars($cnst_re))); )*
+      }
+
+      #[test]
+      fn $rev() {
+          let sst = Builder::reverse(&VariableImpl::new());
+          let sfa = $reg.to_sfa();
+          let pre_image = sfa.pre_image(sst);
+          eprintln!("{:?}", pre_image);
+          $( assert!(pre_image.run(&chars($rev_ac))); )*
+          $( assert!(!pre_image.run(&chars($rev_re))); )*
+      }
+    };
+  }
+
+  macro_rules! replace_tests {
+    (
+      names: [$name:ident, $name_all:ident],
+      from: $from:expr,
+      to: $to:expr,
+      reg: $reg:expr,
+      $(
+        ensure: {
+          accepts: [ $( $sfa_ac:expr ),* ],
+          rejects: [ $( $sfa_re:expr ),* ]
+        },
+      )?
+      accepts: [ $( $accept:expr ),* ], /* inputs havent been replaced */
+      rejects: [ $( $reject:expr ),* ]
+    ) => {
+      #[test]
+      fn $name() {
+        let sst = Builder::replace_reg(Regex::seq($from), to_replacer($to));
+        let sfa = $reg.to_sfa();
+        $(
+          $( assert!(sfa.run(&chars($sfa_ac))); )*
+          $( assert!(!sfa.run(&chars($sfa_re))); )*
+        )?
+        let pre_image = sfa.pre_image(sst);
+        eprintln!("{:?}", pre_image);
+        $( assert!(pre_image.run(&chars(&$accept.replacen($from, $to, 1)))); )+
+        $( assert!(!pre_image.run(&chars(&$reject.replacen($from, $to, 1)))); )+
+      }
+
+      #[test]
+      fn $name_all() {
+        let sst = Builder::replace_all_reg(Regex::seq($from), to_replacer($to));
+        let sfa = $reg.to_sfa();
+        let pre_image = sfa.pre_image(sst);
+        eprintln!("{:?}", pre_image);
+        $( assert!(pre_image.run(&chars(&$accept.replace($from, $to)))); )+
+        $( assert!(!pre_image.run(&chars(&$reject.replace($from, $to)))); )+
+      }
+    };
+  }
 
   mod helper {
     use super::*;
@@ -581,6 +753,7 @@ mod tests {
     impl<T: Domain> BoolAlg for RegexPredicate<T> {
       type Domain = T;
       type Term = Lambda<Self>;
+      type GetOne = T;
 
       fn char(a: Self::Domain) -> Self {
         Self(Regex::Element(a))
@@ -603,17 +776,18 @@ mod tests {
       fn with_lambda(&self, _: &Self::Term) -> Self {
         unimplemented!()
       }
-
       /** apply argument to self and return the result */
       fn denote(&self, _: &Self::Domain) -> bool {
         unimplemented!()
       }
-
       fn satisfiable(&self) -> bool {
         self.0 != Regex::empty()
       }
+      fn get_one(&self) -> Result<Self::Domain, crate::boolean_algebra::NoElement> {
+        unimplemented!()
+      }
     }
-    impl<T: Domain, S: State> From<Sfa<T, S>> for SymFA<T, RegexPredicate<T>, S> {
+    impl<T: Domain, S: State> From<Sfa<T, S>> for SymFa<T, RegexPredicate<T>, S> {
       fn from(sfa: Sfa<T, S>) -> Self {
         let Sfa {
           mut states,
@@ -649,7 +823,8 @@ mod tests {
         )
       }
     }
-    impl<T: Domain, S: State> SymFA<T, RegexPredicate<T>, S> {
+    impl<T: Domain, S: State> SymFa<T, RegexPredicate<T>, S> {
+      /** assuming given sfa has been minimized */
       pub fn to_reg(self) -> Regex<T> {
         if self.states.len() == 0 {
           unreachable!()
@@ -817,13 +992,13 @@ mod tests {
       vec![final_state.clone()],
     );
 
-    let sym_fa = SymFA::new(
+    let sym_fa = SymFa::new(
       states.clone(),
       initial_state.clone(),
       final_states.clone(),
       transition.clone(),
     );
-    println!("{:#?}", sym_fa);
+    eprintln!("{:#?}", sym_fa);
     assert_eq!(sym_fa.states.len(), 2);
     assert!(sym_fa.run(&chars("afvfdl")));
     assert!(!sym_fa.run(&chars("")));
@@ -831,13 +1006,13 @@ mod tests {
     assert!(sym_fa.run(&chars("cwbwad")));
     assert!(!sym_fa.run(&chars("cwbwadww")));
 
-    let sym_fa = SymFA {
+    let sym_fa = SymFa {
       states,
       initial_state,
       final_states,
       transition,
     };
-    println!("{:#?}", sym_fa);
+    eprintln!("{:#?}", sym_fa);
     assert_eq!(sym_fa.states.len(), 3);
     assert!(sym_fa.run(&chars("afvfdl")));
     assert!(!sym_fa.run(&chars("")));
@@ -846,224 +1021,202 @@ mod tests {
     assert!(!sym_fa.run(&chars("cwbwadww")));
   }
 
-  #[test]
-  fn pre_image_identity() {
-    let id = Builder::identity();
+  basics! {
+    names: [pre_image_id_1, pre_image_cnst_1, pre_image_rev_1],
+    reg: Regex::seq("xyz")
+    .or(Regex::range(Some('o'), Some('r')).star()),
+    id: {
+      accepts: ["xyz", "ooqppq", ""],
+      rejects: ["xyz___ddd", "opqr", "abcdefg"]
+    },
+    constant: "xyz" => {
+      accepts: ["xyz", "", "opqr", "abcdefg"],
+      rejects: []
+    },
+    rev: {
+      accepts: ["zyx", "ooqppq", "qppqoo", ""],
+      rejects: ["xyz", "opqr", "abcdefg"]
+    }
+  }
 
-    let reg = Regex::seq("xyz")
-      .or(Regex::range(Some('o'), Some('r')).star())
-      .to_sym_fa();
+  basics! {
+    names: [pre_image_id_2, pre_image_cnst_2, pre_image_rev_2],
+    reg: Regex::seq("abc")
+      .concat(Regex::element('x').or(Regex::element('y')).star()),
+    id: {
+      accepts: ["abc", "abcxyxyxy", "abcxx", "abcy"],
+      rejects: ["a", "ab", "xyz___ddd", "abcdefg", "abcxyxyxyz", ""]
+    },
+    constant: "abcd" => {
+      accepts: [],
+      rejects: ["abc", "abcxyxyxy", "abcxx", "abcy", "xyz___ddd"]
+    },
+    rev: {
+      accepts: ["cba", "xxcba", "yyxyxyxcba", "ycba"],
+      rejects: ["abc", "ab", "cb", "c", "abcdefg", "kkk", "xxx", "y"]
+    }
+  }
 
-    assert!(reg.run(&chars("xyz")));
-    assert!(!reg.run(&chars("xyz__")));
-    assert!(!reg.run(&chars("")));
-    assert!(!reg.run(&chars("aaam")));
-    assert!(!reg.run(&chars("x")));
-    assert!(reg.run(&chars("ooqppq")));
+  basics! {
+    names: [pre_image_id_3, pre_image_cnst_3, pre_image_palindrome],
+    reg: Reg::seq("abc").concat(Reg::all().star()).concat(Reg::seq("cba")),
+    id: {
+      accepts: ["abccba", "abcxyxyxycba", "abcsqpalcba", "abcycba"],
+      rejects: ["a", "ab", "abccb", "bccba", "xyz___ddd", "abcdefgba", "axyxyxyza", ""]
+    },
+    constant: "abcd" => {
+      accepts: [],
+      rejects: ["abccba", "abcxyxyxycba", "abcsqpalcba", "abcycba", "xyzcba"]
+    },
+    rev: {
+      accepts: ["abccba", "abcxyxyxycba", "abcsqpalcba", "abcycba"],
+      rejects: ["a", "ab", "abccb", "bccba", "xyz___ddd", "abcdefgba", "axyxyxyza", ""]
+    }
+  }
 
-    let pre_image = reg.pre_image(id);
+  replace_tests! {
+    names: [pre_image_replace_one, pre_image_replace_one_all],
+    from: "a",
+    to: "x",
+    reg: Reg::seq("x"),
+    ensure: {
+      accepts: ["x"],
+      rejects: ["xyz", "abc", "kkk", "s"]
+    },
+    accepts: ["x", "a"],
+    rejects: ["xyz", "abc", "kkk", "s"]
+  }
 
-    assert!(pre_image.run(&chars("xyz")));
-    assert!(!pre_image.run(&chars("xyz__")));
-    assert!(!pre_image.run(&chars("")));
-    assert!(!pre_image.run(&chars("aaam")));
-    assert!(!pre_image.run(&chars("x")));
-    assert!(pre_image.run(&chars("ooqppq")));
+  replace_tests! {
+    names: [pre_image_replace_concat, pre_image_replace_concat_all],
+    from: "abc",
+    to: "xyz",
+    reg: Reg::seq("xyz"),
+    ensure: {
+      accepts: ["xyz"],
+      rejects: ["xyzzfff", "abc", "abcfff", "kkk"]
+    },
+    accepts: ["xyz", "abc"],
+    rejects: ["xyzfff", "abcfff", "kkk"]
+  }
+
+  replace_tests! {
+    names: [pre_image_replace_star, pre_image_replace_star_all],
+    from: "a",
+    to: "x",
+    reg: Reg::seq("x").concat(Reg::all().star()),
+    ensure: {
+      accepts: ["x", "xyzfff"],
+      rejects: ["a", "abc", "abcfff", "kkk"]
+    },
+    accepts: ["x", "xyzfff", "a", "abc", "abcfff"],
+    rejects: ["kkk"]
   }
 
   #[test]
-  fn pre_image_rev() {
-    let rev = Builder::reverse();
+  fn reachables() {
+    type S = StateImpl;
+    let sfa = super::super::macros::sfa! {
+      { start, s1, s2, cycle, s3, end },
+      {
+        -> start,
+        (start, Predicate::char('a')) -> [s1],
+        (start, Predicate::top()) -> [s2, cycle],
+        (cycle, Predicate::top()) -> [cycle, s2],
+        (s2, Predicate::top()) -> [s3],
+        (s1, Predicate::top()) -> [s3],
+        (s3, Predicate::range(None, Some('x'))) -> [end],
+        (end, Predicate::top()) -> [cycle]
+      },
+      { end }
+    };
 
-    let abc = Regex::seq("abc").to_sym_fa();
+    assert_eq!(sfa.final_set().len(), 1);
 
-    assert!(abc.run(&chars("abc")));
-    assert!(!abc.run(&chars("ab")));
-    assert!(!abc.run(&chars("kkk")));
+    let end = sfa.final_set().iter().next().unwrap();
 
-    let cba = abc.pre_image(rev.clone());
+    let from_end = sfa.reachables(end);
 
-    assert!(cba.run(&chars("cba")));
-    assert!(!cba.run(&chars("abc")));
-    assert!(!cba.run(&chars("ab")));
-    assert!(!cba.run(&chars("cb")));
-    assert!(!cba.run(&chars("kkk")));
-
-    let abc_xystar = Regex::seq("abc")
-      .concat(Regex::element('x').or(Regex::element('y')).star())
-      .to_sym_fa();
-
-    assert!(abc_xystar.run(&chars("abc")));
-    assert!(!abc_xystar.run(&chars("ab")));
-    assert!(!abc_xystar.run(&chars("kkk")));
-    assert!(abc_xystar.run(&chars("abcxx")));
-    assert!(abc_xystar.run(&chars("abcxyxyxyy")));
-    assert!(abc_xystar.run(&chars("abcyy")));
-    assert!(!abc_xystar.run(&chars("xxx")));
-    assert!(!abc_xystar.run(&chars("yy")));
-
-    let xystar_cba = abc_xystar.pre_image(rev);
-
-    assert!(xystar_cba.run(&chars("cba")));
-    assert!(!xystar_cba.run(&chars("abc")));
-    assert!(!xystar_cba.run(&chars("ab")));
-    assert!(!xystar_cba.run(&chars("cb")));
-    assert!(!xystar_cba.run(&chars("kkk")));
-    assert!(xystar_cba.run(&chars("xxcba")));
-    assert!(xystar_cba.run(&chars("yyxyxyxcba")));
-    assert!(xystar_cba.run(&chars("yycba")));
-    assert!(!xystar_cba.run(&chars("xxx")));
-    assert!(!xystar_cba.run(&chars("yy")));
+    /* cycle, s2, s3, end */
+    assert_eq!(from_end.len(), 4);
   }
 
   #[test]
-  fn pre_image_constant() {
-    let cnst = Builder::constant("xyz");
-
-    let xyz = Regex::seq("xyz").to_sym_fa();
-
-    assert!(xyz.run(&chars("xyz")));
-    assert!(!xyz.run(&chars("xyz__")));
-    assert!(!xyz.run(&chars("")));
-    assert!(!xyz.run(&chars("aaam")));
-    assert!(!xyz.run(&chars("x")));
-
-    let any = xyz.pre_image(cnst);
-
-    assert!(any.run(&chars("xyz")));
-    assert!(any.run(&chars("xyz__")));
-    assert!(any.run(&chars("")));
-    assert!(any.run(&chars("aaam")));
-    assert!(any.run(&chars("x")));
+  fn reverse_of_reverse_is_identity() {
+    let sst = Builder::reverse(&VariableImpl::new());
+    let accepts = [
+      "atoxa",
+      "atoxpappappappapf",
+      "atoxpappappapd",
+      &format!("atox{}x", "pap".repeat(100)),
+    ];
+    let rejects = [
+      "atoxaa",
+      "atoxapappappappapf",
+      "atoxpapfpapssssssssssssssssssssssssssss",
+      "atoxpfappappapd",
+      "astoxpappaps",
+      "atoxpappappapda",
+      "xxx",
+      "",
+    ];
+    let sfa = Reg::seq("atox")
+      .concat(Reg::seq("pap").star())
+      .concat(Reg::all())
+      .to_sfa::<StateImpl>();
+    for accept in &accepts {
+      eprintln!("{}", accept);
+      assert!(sfa.run(&chars(accept)));
+    }
+    for reject in &rejects {
+      eprintln!("{}", reject);
+      assert!(!sfa.run(&chars(reject)));
+    }
+    let sfa = sfa.pre_image(sst.clone());
+    for accept in &accepts {
+      eprintln!("{}", accept);
+      assert!(sfa.run(&chars(&accept.chars().rev().collect::<String>())));
+    }
+    for reject in &rejects {
+      eprintln!("{}", reject);
+      assert!(!sfa.run(&chars(&reject.chars().rev().collect::<String>())));
+    }
+    let sfa = sfa.pre_image(sst);
+    for accept in &accepts {
+      eprintln!("{}", accept);
+      assert!(sfa.run(&chars(&accept)));
+    }
+    for reject in &rejects {
+      eprintln!("{}", reject);
+      assert!(!sfa.run(&chars(&reject)));
+    }
   }
 
   #[test]
-  fn pre_image_replace_one_all() {
-    let a_to_x = Builder::replace_all_reg(Regex::seq("a"), to_replacer("x"));
+  fn chain() {
+    let sfa: SymFa<_, _, StateImpl> = Reg::seq("pre").to_sfa().chain(Reg::seq("suf").to_sfa());
 
-    let x = Regex::seq("x").to_sym_fa::<StateImpl>();
-
-    assert!(x.member(&chars("x")));
-    assert!(!x.member(&chars("xyzfff")));
-    assert!(!x.member(&chars("a")));
-    assert!(!x.member(&chars("ayzfff")));
-    assert!(!x.member(&chars("kkk")));
-
-    let a = x.pre_image(a_to_x);
-
-    assert!(a.member(&chars("x")));
-    assert!(!a.member(&chars("xyzfff")));
-    assert!(a.member(&chars("a")));
-    assert!(!a.member(&chars("ayzfff")));
-    assert!(!a.member(&chars("kkk")));
-  }
-
-  #[test]
-  fn pre_image_replace_concat_all() {
-    let abc_to_xyz = Builder::replace_all_reg(Regex::seq("abc"), to_replacer("xyz"));
-
-    let xyz = Regex::seq("xyz").to_sym_fa::<StateImpl>();
-
-    assert!(xyz.member(&chars("xyz")));
-    assert!(!xyz.member(&chars("xyzzfff")));
-    assert!(!xyz.member(&chars("abc")));
-    assert!(!xyz.member(&chars("abcfff")));
-    assert!(!xyz.member(&chars("kkk")));
-
-    let abc_xyz = xyz.pre_image(abc_to_xyz);
-
-    assert!(abc_xyz.member(&chars("xyz")));
-    assert!(!abc_xyz.member(&chars("xyzfff")));
-    assert!(abc_xyz.member(&chars("abc")));
-    assert!(!abc_xyz.member(&chars("abcfff")));
-    assert!(!abc_xyz.member(&chars("kkk")));
-  }
-
-  #[test]
-  fn pre_image_replace_star_all() {
-    let a_to_x = Builder::replace_all_reg(Regex::seq("a"), to_replacer("x"));
-
-    let x_ = Regex::seq("x")
-      .concat(Regex::all().star())
-      .to_sym_fa::<StateImpl>();
-
-    assert!(x_.member(&chars("x")));
-    assert!(x_.member(&chars("xyzfff")));
-    assert!(!x_.member(&chars("a")));
-    assert!(!x_.member(&chars("ayzfff")));
-    assert!(!x_.member(&chars("kkk")));
-
-    let a_ = x_.pre_image(a_to_x);
-
-    assert!(a_.member(&chars("x")));
-    assert!(a_.member(&chars("xyzfff")));
-    assert!(a_.member(&chars("a")));
-    assert!(a_.member(&chars("ayzfff")));
-    assert!(!a_.member(&chars("kkk")));
-  }
-
-  #[test]
-  fn pre_image_replace_one() {
-    let a_to_x = Builder::replace_reg(Regex::seq("a"), to_replacer("x"));
-
-    let x = Regex::seq("x").to_sym_fa::<StateImpl>();
-
-    assert!(x.member(&chars("x")));
-    assert!(!x.member(&chars("xyzfff")));
-    assert!(!x.member(&chars("a")));
-    assert!(!x.member(&chars("ayzfff")));
-    assert!(!x.member(&chars("kkk")));
-
-    let a = x.pre_image(a_to_x);
-
-    assert!(a.member(&chars("x")));
-    assert!(!a.member(&chars("xyzfff")));
-    assert!(a.member(&chars("a")));
-    assert!(!a.member(&chars("ayzfff")));
-    assert!(!a.member(&chars("kkk")));
-  }
-
-  #[test]
-  fn pre_image_replace_concat() {
-    let abc_to_xy = Builder::replace_reg(Regex::seq("abc"), to_replacer("xyz"));
-
-    let xy = Regex::seq("xyz").to_sym_fa::<StateImpl>();
-
-    assert!(xy.member(&chars("xyz")));
-    assert!(!xy.member(&chars("xyzfff")));
-    assert!(!xy.member(&chars("abc")));
-    assert!(!xy.member(&chars("abcfff")));
-    assert!(!xy.member(&chars("kkk")));
-
-    let abc_xy = xy.pre_image(abc_to_xy);
-
-    assert!(abc_xy.member(&chars("xyz")));
-    assert!(!abc_xy.member(&chars("xyzfff")));
-    assert!(abc_xy.member(&chars("abc")));
-    assert!(!abc_xy.member(&chars("abcfff")));
-    assert!(!abc_xy.member(&chars("kkk")));
-  }
-
-  #[test]
-  fn pre_image_replace_star() {
-    let a_to_x = Builder::replace_reg(Regex::seq("a"), to_replacer("x"));
-
-    let x_ = Regex::seq("x")
-      .concat(Regex::all().star())
-      .to_sym_fa::<StateImpl>();
-
-    assert!(x_.member(&chars("x")));
-    assert!(x_.member(&chars("xyzfff")));
-    assert!(!x_.member(&chars("a")));
-    assert!(!x_.member(&chars("ayzfff")));
-    assert!(!x_.member(&chars("kkk")));
-
-    let a_ = x_.pre_image(a_to_x);
-
-    assert!(a_.member(&chars("x")));
-    assert!(a_.member(&chars("xyzfff")));
-    assert!(a_.member(&chars("a")));
-    assert!(a_.member(&chars("ayzfff")));
-    assert!(!a_.member(&chars("kkk")));
+    assert!(sfa.run(&vec![
+      CharWrap::Char('p'),
+      CharWrap::Char('r'),
+      CharWrap::Char('e'),
+      CharWrap::Separator,
+      CharWrap::Char('s'),
+      CharWrap::Char('u'),
+      CharWrap::Char('f')
+    ]));
+    assert!(!sfa.run(&vec![
+      CharWrap::Char('p'),
+      CharWrap::Char('r'),
+      CharWrap::Char('e'),
+    ]));
+    assert!(!sfa.run(&vec![
+      CharWrap::Char('p'),
+      CharWrap::Char('r'),
+      CharWrap::Char('e'),
+      CharWrap::Char('s'),
+      CharWrap::Char('u'),
+      CharWrap::Char('f')
+    ]));
   }
 }

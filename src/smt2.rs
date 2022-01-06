@@ -1,19 +1,22 @@
-use crate::util::Domain;
-use crate::regular::regex::Regex;
+use crate::boolean_algebra::BoolAlg;
+use crate::regular::{regex::Regex, symbolic_automata::Sfa};
 use crate::state::State;
 use crate::transducer::transducer::Transducer;
+use crate::util::Domain;
 use smt2parser::{
   concrete::{Command, Constant, Identifier, QualIdentifier, Sort, Symbol, SyntaxBuilder, Term},
-  CommandStream, Numeral,
+  CommandStream, Error as Smt2ParserError, Numeral,
 };
-use std::{fmt::Debug, iter::FromIterator};
+use std::{collections::HashMap, fmt::Debug};
 
 type VarIndex = usize;
 pub type Variables = Vec<String>;
 
 pub fn get_symbol(qi: &QualIdentifier) -> &str {
   if let QualIdentifier::Simple {
-    identifier: Identifier::Simple { symbol: Symbol(symbol) },
+    identifier: Identifier::Simple {
+      symbol: Symbol(symbol),
+    },
   } = qi
   {
     symbol
@@ -67,8 +70,8 @@ pub enum TransductionOp<T: Domain, S: State> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Transduction<T: Domain, S: State>(pub Vec<TransductionOp<T, S>>);
-impl<T: Domain, S: State> Transduction<T, S> {
+pub struct Transduction<D: Domain, S: State>(pub Vec<TransductionOp<D, S>>);
+impl<D: Domain, S: State> Transduction<D, S> {
   pub fn empty() -> Self {
     Self(vec![])
   }
@@ -136,94 +139,46 @@ impl<T: Domain, S: State> Transduction<T, S> {
   }
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub struct StraightLineConstraint<T: Domain, S: State>(
-  pub(crate) VarIndex,
-  pub(crate) Transduction<T, S>,
-);
-#[derive(Debug, PartialEq, Clone)]
-pub struct RegularConstraint<T: Domain>(pub(crate) VarIndex, pub(crate) Regex<T>);
-#[derive(Debug, PartialEq, Clone)]
-pub struct IntLinearConstraint(pub(crate) VarIndex, pub(crate) Vec<LinearTerm>);
+pub trait Constraint {
+  type Value;
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum Constraint<T: Domain, S: State> {
-  STLine(StraightLineConstraint<T, S>),
-  Reg(RegularConstraint<T>),
-  #[allow(dead_code)]
-  Linear(IntLinearConstraint),
+  fn idx(&self) -> VarIndex;
+  fn constraint(self) -> Self::Value;
 }
-
 #[derive(Debug, PartialEq, Clone)]
-pub struct Constraints<T: Domain, S: State>(Vec<Constraint<T, S>>);
-impl<T: Domain, S: State> Constraints<T, S> {
-  pub fn new(constraints: Vec<Constraint<T, S>>) -> Self {
-    Constraints(constraints)
-  }
+pub struct StraightLineConstraint<D: Domain, S: State>(VarIndex, Transduction<D, S>);
+impl<D: Domain, S: State> Constraint for StraightLineConstraint<D, S> {
+  type Value = Transduction<D, S>;
 
-  pub fn filter_sl(&self, idx: VarIndex) -> Option<&StraightLineConstraint<T, S>> {
-    let mut filtered = self.0.iter().filter_map(|constraint| {
-      if let Constraint::STLine(sl_cons) = constraint {
-        (sl_cons.0 == idx).then(|| sl_cons)
-      } else {
-        None
-      }
-    });
-    let constraint = filtered.next();
-    if let None = filtered.next() {
-      constraint
-    } else {
-      panic!("Given constraints are not straightline-constraint");
-    }
+  fn idx(&self) -> VarIndex {
+    self.0
   }
-
-  pub fn filter_reg(&self, idx: VarIndex) -> Vec<&RegularConstraint<T>> {
-    let filtered = self.0.iter().filter_map(|constraint| {
-      if let Constraint::Reg(reg_cons) = constraint {
-        (reg_cons.0 == idx).then(|| reg_cons)
-      } else {
-        None
-      }
-    });
-    filtered.collect()
-  }
-
-  pub fn filter_int(&self, idx: VarIndex) -> Vec<&IntLinearConstraint> {
-    let filtered = self.0.iter().filter_map(|constraint| {
-      if let Constraint::Linear(il_cons) = constraint {
-        (il_cons.0 == idx).then(|| il_cons)
-      } else {
-        None
-      }
-    });
-    filtered.collect()
-  }
-
-  pub fn push(&mut self, constraint: Constraint<T, S>) {
-    self.0.push(constraint);
-  }
-
-  pub fn iter(&self) -> std::slice::Iter<'_, Constraint<T, S>> {
-    self.0.iter()
+  fn constraint(self) -> Self::Value {
+    self.1
   }
 }
-impl<T: Domain, S: State> FromIterator<Constraint<T, S>> for Constraints<T, S> {
-  fn from_iter<It: IntoIterator<Item = Constraint<T, S>>>(iter: It) -> Self {
-    let mut constraints = Constraints::new(vec![]);
+#[derive(Debug, PartialEq, Clone)]
+pub struct RegularConstraint<D: Domain>(VarIndex, Regex<D>);
+impl<D: Domain> Constraint for RegularConstraint<D> {
+  type Value = Regex<D>;
 
-    for constraint in iter {
-      constraints.push(constraint)
-    }
-
-    constraints
+  fn idx(&self) -> VarIndex {
+    self.0
+  }
+  fn constraint(self) -> Self::Value {
+    self.1
   }
 }
-impl<T: Domain, S: State> IntoIterator for Constraints<T, S> {
-  type Item = Constraint<T, S>;
-  type IntoIter = std::vec::IntoIter<Self::Item>;
+#[derive(Debug, PartialEq, Clone)]
+pub struct IntLinearConstraint(VarIndex, Vec<LinearTerm>);
+impl Constraint for IntLinearConstraint {
+  type Value = Vec<LinearTerm>;
 
-  fn into_iter(self) -> Self::IntoIter {
-    self.0.into_iter()
+  fn idx(&self) -> VarIndex {
+    self.0
+  }
+  fn constraint(self) -> Self::Value {
+    self.1
   }
 }
 
@@ -261,17 +216,25 @@ impl Debug for Logic {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Smt2<T: Domain, S: State> {
-  constraints: Constraints<T, S>,
+pub enum SolverResult<B: BoolAlg> {
+  SAT,
+  Model(Vec<B>),
+  UNSAT,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Smt2<D: Domain, S: State> {
+  sl_constraints: Vec<StraightLineConstraint<D, S>>,
+  reg_constraints: Vec<RegularConstraint<D>>,
   vars: Variables,
   int_vars: Variables,
   option: SMTOption,
 }
-impl<T: Domain, S: State> Smt2<T, S> {
-  pub fn parse(input: &str) -> Result<Self, String> {
+impl<D: Domain, S: State> Smt2<D, S> {
+  pub fn parse(input: &str) -> Result<Self, Smt2ParserError> {
     let commands = CommandStream::new(input.as_bytes(), SyntaxBuilder, None)
       .collect::<Result<Vec<_>, _>>()
-      .map_err(|err| err.to_string())?;
+      .map_err(|err| err)?;
     let mut smt2 = Smt2::init();
     for command in commands.into_iter() {
       smt2.update(command);
@@ -281,9 +244,10 @@ impl<T: Domain, S: State> Smt2<T, S> {
 
   fn init() -> Self {
     Smt2 {
-      constraints: Constraints::new(vec![]),
-      vars: Vec::new(),
-      int_vars: Vec::new(),
+      sl_constraints: vec![],
+      reg_constraints: vec![],
+      vars: vec![],
+      int_vars: vec![],
       option: SMTOption::default(),
     }
   }
@@ -339,12 +303,10 @@ impl<T: Domain, S: State> Smt2<T, S> {
           "=" => {
             if let [qi, transduction] = &arguments[..] {
               if let Term::QualIdentifier(qi) = qi {
-                self
-                  .constraints
-                  .push(Constraint::STLine(StraightLineConstraint(
-                    get_var(qi, &self.vars),
-                    Transduction::from(transduction, &self.vars),
-                  )))
+                self.sl_constraints.push(StraightLineConstraint(
+                  get_var(qi, &self.vars),
+                  Transduction::from(transduction, &self.vars),
+                ))
               } else {
                 unimplemented!()
               }
@@ -355,10 +317,9 @@ impl<T: Domain, S: State> Smt2<T, S> {
           "str.in.re" => {
             if let [qi, reg] = &arguments[..] {
               if let Term::QualIdentifier(qi) = qi {
-                self.constraints.push(Constraint::Reg(RegularConstraint(
-                  get_var(qi, &self.vars),
-                  Regex::new(reg),
-                )))
+                self
+                  .reg_constraints
+                  .push(RegularConstraint(get_var(qi, &self.vars), Regex::new(reg)))
               } else {
                 panic!("Syntax error")
               }
@@ -376,50 +337,49 @@ impl<T: Domain, S: State> Smt2<T, S> {
     }
   }
 
-  pub fn straight_line(&self) -> Vec<StraightLineConstraint<T, S>> {
-    let mut sl_cons = vec![];
+  pub fn emit_sfa(&mut self) -> Sfa<D, S> {
+    assert_ne!(self.vars.len(), 0);
+    (0..self.vars.len())
+      .into_iter()
+      .map(|idx| {
+        self
+          .filter_reg(idx)
+          .map(|reg| reg.to_sfa())
+          .unwrap_or_default()
+      })
+      .reduce(|result, sfa| result.chain(sfa))
+      .map(|sfa| sfa.finish())
+      .expect("no string constraint given")
+  }
 
-    for idx in 0..self.vars.len() {
-      if let Some(sl) = self.constraints.filter_sl(idx) {
-        sl_cons.push(sl.clone());
-      } else {
-        sl_cons.push(StraightLineConstraint(idx, Transduction::empty()))
-      }
+  pub fn filter_sl(&self, idx: VarIndex) -> Option<&StraightLineConstraint<D, S>> {
+    self.sl_constraints.iter().find(|sl_cons| sl_cons.idx() == idx)
+  }
+
+  pub fn filter_reg(&mut self, idx: VarIndex) -> Option<Regex<D>> {
+    let mut result: Option<Regex<D>> = None;
+
+    while let Some(i) = self
+      .reg_constraints
+      .iter()
+      .position(|reg_cons| reg_cons.idx() == idx)
+    {
+      let regex = self.reg_constraints.swap_remove(i).constraint();
+      result = Some(match result {
+        Some(result) => result.inter(regex),
+        None => regex,
+      });
     }
 
-    sl_cons
+    result
   }
 
-  pub fn regular(&self) -> Vec<RegularConstraint<T>> {
-    self
-      .constraints
-      .iter()
-      .filter_map(|constraint| {
-        if let Constraint::Reg(reg) = constraint {
-          Some(reg.clone())
-        } else {
-          None
-        }
-      })
-      .collect()
+  pub fn sl_constraints(&self) -> &Vec<StraightLineConstraint<D, S>> {
+    &self.sl_constraints
   }
 
-  pub fn int_linear(&self) -> Vec<IntLinearConstraint> {
-    self
-      .constraints
-      .iter()
-      .filter_map(|constraint| {
-        if let Constraint::Linear(il) = constraint {
-          Some(il.clone())
-        } else {
-          None
-        }
-      })
-      .collect()
-  }
-
-  pub fn constraints(&self) -> &Constraints<T, S> {
-    &self.constraints
+  pub fn reg_constraints(&self) -> &Vec<RegularConstraint<D>> {
+    &self.reg_constraints
   }
 
   pub fn vars(&self) -> &Variables {
@@ -440,6 +400,48 @@ impl<T: Domain, S: State> Smt2<T, S> {
 
   pub fn logic(&self) -> &Logic {
     &self.option.logic
+  }
+
+  pub fn to_model<B: BoolAlg>(&self, path: Vec<B>) -> HashMap<String, String> {
+    use crate::transducer::sst_factory::SstBuilder;
+    use crate::transducer::term::{OutputComp, VariableImpl};
+    let mut result = HashMap::new();
+    let mut idx = 0usize;
+
+    fn convert<D: Domain>(reg: Regex<D>) -> Regex<char> {
+      match reg {
+        Regex::Empty => Regex::Empty,
+        Regex::Epsilon => Regex::Epsilon,
+        Regex::All => Regex::All,
+        Regex::Element(e) => Regex::Element(e.into()),
+        Regex::Range(l, r) => Regex::Range(l.map(|e| e.into()), r.map(|e| e.into())),
+        Regex::Concat(vec) => Regex::Concat(vec.into_iter().map(|r| convert(r)).collect()),
+        Regex::Or(vec) => Regex::Or(vec.into_iter().map(|r| convert(r)).collect()),
+        Regex::Inter(vec) => Regex::Inter(vec.into_iter().map(|r| convert(r)).collect()),
+        Regex::Star(reg) => Regex::Star(Box::new(convert(*reg))),
+        Regex::Not(reg) => Regex::Not(Box::new(convert(*reg))),
+      }
+    }
+
+    path.into_iter().for_each(|predicate| {
+      assert!(idx < self.vars.len());
+      
+      if predicate == B::char(B::Domain::separator()) {
+        idx += 1;
+      } else {
+        let s = result.entry(idx).or_insert(String::new());
+        s.push(predicate.get_one().unwrap().into());
+      }
+    });
+
+    result.into_iter().map(|(idx, s)| (self.vars[idx].clone(), s.clone())).collect()
+  }
+}
+impl<D: Domain, S: State> Iterator for Smt2<D, S> {
+  type Item = StraightLineConstraint<D, S>;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    self.sl_constraints.pop()
   }
 }
 
@@ -469,11 +471,7 @@ mod tests {
     assert_eq!(&vec!["i2".to_string()], smt2.int_vars(),);
     assert!(smt2.check_sat());
     assert!(!smt2.get_model());
-    let mut sl_iter = smt2.straight_line().into_iter();
-    assert_eq!(
-      Some(StraightLineConstraint(0, Transduction(vec![]))),
-      sl_iter.next()
-    );
+    let mut sl_iter = smt2.sl_constraints().clone().into_iter();
     assert_eq!(
       Some(StraightLineConstraint(
         1,
@@ -493,7 +491,7 @@ mod tests {
       sl_iter.next()
     );
     assert_eq!(None, sl_iter.next());
-    let mut re_iter = smt2.regular().into_iter();
+    let mut re_iter = smt2.reg_constraints().clone().into_iter();
     let x1 = Regex::Element('a').concat(Regex::Element('b'));
     let x1 = x1.clone().concat(x1.star());
     assert_eq!(Some(RegularConstraint(1, x1)), re_iter.next());
@@ -505,6 +503,5 @@ mod tests {
       re_iter.next()
     );
     assert_eq!(None, re_iter.next());
-    assert_eq!(None, smt2.int_linear().iter().next());
   }
 }

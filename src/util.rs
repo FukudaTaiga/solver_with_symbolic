@@ -1,6 +1,6 @@
 use std::{fmt::Debug, hash::Hash};
 
-pub trait Domain: Debug + Eq + Ord + Clone + Hash + From<char> {
+pub trait Domain: Debug + Eq + Ord + Clone + Hash + From<char> + Into<char> {
   fn separator() -> Self;
 }
 impl Domain for char {
@@ -16,7 +16,24 @@ pub enum CharWrap {
 }
 impl From<char> for CharWrap {
   fn from(a: char) -> Self {
-    CharWrap::Char(a)
+    if a == char::separator() {
+      CharWrap::Separator
+    } else {
+      CharWrap::Char(a)
+    }
+  }
+}
+impl Into<char> for CharWrap {
+  fn into(self) -> char {
+    match self {
+      CharWrap::Char(a) => a,
+      CharWrap::Separator => char::separator(),
+    }
+  }
+}
+impl Default for CharWrap {
+  fn default() -> Self {
+    CharWrap::Char(char::default())
   }
 }
 impl Domain for CharWrap {

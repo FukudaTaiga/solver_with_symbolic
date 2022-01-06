@@ -12,10 +12,9 @@ pub trait FunctionTerm: Debug + Eq + Hash + Clone {
 
   fn identity() -> Self;
 
-  fn apply<'a>(
-    &'a self,
-    arg: &'a Self::Domain,
-  ) -> &'a Self::Domain;
+  fn constant(a: Self::Domain) -> Self;
+
+  fn apply<'a>(&'a self, arg: &'a Self::Domain) -> &'a Self::Domain;
 
   /** functional composition of self (other (x)) */
   fn compose(self, other: Self) -> Self;
@@ -30,10 +29,6 @@ pub enum Lambda<B: BoolAlg + ?Sized> {
   Function(Vec<(Box<B>, B::Domain)>),
 }
 impl<B: BoolAlg> Lambda<B> {
-  pub fn constant(c: B::Domain) -> Lambda<B> {
-    Lambda::Constant(c)
-  }
-
   pub fn mapping(m: Vec<(B::Domain, B::Domain)>) -> Lambda<B> {
     Lambda::Mapping(m)
   }
@@ -41,7 +36,7 @@ impl<B: BoolAlg> Lambda<B> {
 impl<B> FunctionTerm for Lambda<B>
 where
   B: BoolAlg,
-  B::Domain: Clone + Eq,
+  B::Domain: Domain,
 {
   type Domain = B::Domain;
 
@@ -49,10 +44,11 @@ where
     Lambda::Id
   }
 
-  fn apply<'a>(
-    &'a self,
-    arg: &'a Self::Domain,
-  ) -> &'a Self::Domain {
+  fn constant(a: Self::Domain) -> Self {
+    Lambda::Constant(a)
+  }
+
+  fn apply<'a>(&'a self, arg: &'a Self::Domain) -> &'a Self::Domain {
     match self {
       Lambda::Id => arg,
       Lambda::Constant(c) => c,
@@ -104,24 +100,58 @@ impl Variable for Rc<VariableImpl> {
 
 static VAR_CNT: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub struct VariableImpl(usize);
 impl VariableImpl {
   pub fn new() -> VariableImpl {
     VariableImpl(VAR_CNT.fetch_add(1, Ordering::SeqCst))
   }
 }
-
-#[derive(Debug, PartialEq, Clone)]
-pub enum UpdateComp<F: FunctionTerm, V: Variable> {
-  F(F),
-  X(V),
+impl Debug for VariableImpl {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_tuple("X").field(&self.0).finish()
+  }
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum OutputComp<T, V: Variable> {
-  A(T),
+#[derive(PartialEq, Clone)]
+pub enum UpdateComp<F: FunctionTerm, V: Variable> {
+  /** function term representation */
+  F(F),
+  /** variable representation */
   X(V),
+}
+impl<F: FunctionTerm, V: Variable> Debug for UpdateComp<F, V> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::F(lambda) => f.write_fmt(format_args!("{:?}", lambda)),
+      Self::X(var) => f.write_fmt(format_args!("{:?}", var)),
+    }
+  }
+}
+impl<D: Domain, V: Variable, F: FunctionTerm<Domain = D>> From<OutputComp<D, V>>
+  for UpdateComp<F, V>
+{
+  fn from(component: OutputComp<D, V>) -> Self {
+    match component {
+      OutputComp::A(a) => UpdateComp::F(F::constant(a)),
+      OutputComp::X(x) => UpdateComp::X(x),
+    }
+  }
+}
+#[derive(PartialEq, Clone)]
+pub enum OutputComp<D: Domain, V: Variable> {
+  /** domain character representation */
+  A(D),
+  /** variable representation */
+  X(V),
+}
+impl<D: Domain, V: Variable> Debug for OutputComp<D, V> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::A(a) => f.write_fmt(format_args!("{:?}", a)),
+      Self::X(var) => f.write_fmt(format_args!("{:?}", var)),
+    }
+  }
 }
 
 pub type FunctionTermImpl<T> = Lambda<Predicate<T>>;

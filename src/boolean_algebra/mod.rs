@@ -1,6 +1,17 @@
 use crate::transducer::term::{FunctionTerm, Lambda};
 use crate::util::Domain;
-use std::{fmt::Debug, hash::Hash};
+use std::{
+  fmt::{self, Debug},
+  hash::Hash,
+};
+
+#[derive(Debug, Clone)]
+pub struct NoElement;
+impl fmt::Display for NoElement {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "No Element satisfing the given predicate")
+  }
+}
 
 /** express effective Boolean Algebra A, tuple of (D, Phi, [], top, bot, and, or, not) \
  * D: a set of domain elements
@@ -15,6 +26,7 @@ use std::{fmt::Debug, hash::Hash};
 pub trait BoolAlg: Debug + Eq + Hash + Clone {
   type Domain: Domain;
   type Term: FunctionTerm<Domain = Self::Domain>;
+  type GetOne: Domain;
 
   /**
    * predicate that equals x == a.
@@ -47,48 +59,58 @@ pub trait BoolAlg: Debug + Eq + Hash + Clone {
   fn denote(&self, arg: &Self::Domain) -> bool;
 
   fn satisfiable(&self) -> bool;
+
+  fn get_one(&self) -> Result<Self::GetOne, NoElement>;
 }
 /** Boolean Algebra with epsilon */
-impl<B: BoolAlg> BoolAlg for Option<B> {
-  type Domain = B::Domain;
-  type Term = B::Term;
+// impl<B: BoolAlg> BoolAlg for Option<B> {
+//   type Domain = B::Domain;
+//   type Term = B::Term;
+//   type GetOne = Option<B::GetOne>;
 
-  fn char(a: Self::Domain) -> Self {
-    Some(B::char(a))
-  }
-  fn and(&self, other: &Self) -> Self {
-    self
-      .as_ref()
-      .and_then(|p1| other.as_ref().map(|p2| p1.and(p2)))
-      .or(Some(B::bot()))
-  }
-  fn or(&self, other: &Self) -> Self {
-    self
-      .as_ref()
-      .and_then(|p1| other.as_ref().map(|p2| p1.or(p2)))
-      .or(Some(B::bot()))
-  }
-  fn not(&self) -> Self {
-    self.as_ref().map(|p| p.not())
-  }
-  fn top() -> Self {
-    Some(B::top())
-  }
-  fn bot() -> Self {
-    Some(B::bot())
-  }
-  fn with_lambda(&self, f: &Self::Term) -> Self {
-    self.as_ref().map(|p| p.with_lambda(f))
-  }
+//   fn char(a: Self::Domain) -> Self {
+//     Some(B::char(a))
+//   }
+//   fn and(&self, other: &Self) -> Self {
+//     self
+//       .as_ref()
+//       .and_then(|p1| other.as_ref().map(|p2| p1.and(p2)))
+//       .or(Some(B::bot()))
+//   }
+//   fn or(&self, other: &Self) -> Self {
+//     self
+//       .as_ref()
+//       .and_then(|p1| other.as_ref().map(|p2| p1.or(p2)))
+//       .or(Some(B::bot()))
+//   }
+//   fn not(&self) -> Self {
+//     self.as_ref().map(|p| p.not())
+//   }
+//   fn top() -> Self {
+//     Some(B::top())
+//   }
+//   fn bot() -> Self {
+//     Some(B::bot())
+//   }
+//   fn with_lambda(&self, f: &Self::Term) -> Self {
+//     self.as_ref().map(|p| p.with_lambda(f))
+//   }
 
-  fn denote(&self, arg: &Self::Domain) -> bool {
-    self.as_ref().map_or_else(|| true, |p| p.denote(arg))
-  }
+//   fn denote(&self, arg: &Self::Domain) -> bool {
+//     self.as_ref().map_or_else(|| true, |p| p.denote(arg))
+//   }
 
-  fn satisfiable(&self) -> bool {
-    self.as_ref().map_or_else(|| true, |p| p.satisfiable())
-  }
-}
+//   fn satisfiable(&self) -> bool {
+//     self.as_ref().map_or_else(|| true, |p| p.satisfiable())
+//   }
+
+//   fn get_one(&self) -> Result<Self::GetOne, NoElement> {
+//     match self {
+//       Some(p) => Ok(Some(p.get_one()?)),
+//       None => Ok(None),
+//     }
+//   }
+// }
 
 /** for Primitive Predicate */
 #[derive(Debug, Eq, Hash, Clone)]
@@ -180,6 +202,7 @@ impl<T: Domain> Predicate<T> {
 impl<T: Domain> BoolAlg for Predicate<T> {
   type Domain = T;
   type Term = Lambda<Self>;
+  type GetOne = T;
 
   fn char(a: Self::Domain) -> Self {
     Predicate::Eq(a)
@@ -281,11 +304,11 @@ impl<T: Domain> BoolAlg for Predicate<T> {
         Predicate::in_set(els1.into_iter().chain(els2.into_iter()).cloned())
       }
       (Predicate::InSet(els), p) | (p, Predicate::InSet(els)) => {
-        let els_ = els
+        let els_: Vec<_> = els
           .into_iter()
           .filter(|e| !p.denote(*e))
           .cloned()
-          .collect::<Vec<_>>();
+          .collect();
         if els_.len() == 0 {
           p.clone()
         } else {
@@ -356,6 +379,40 @@ impl<T: Domain> BoolAlg for Predicate<T> {
 
   fn satisfiable(&self) -> bool {
     !matches!(self, Predicate::Bool(false))
+  }
+
+  // use z3?...
+  fn get_one(&self) -> Result<Self::GetOne, NoElement> {
+    match self {
+      Predicate::Bool(b) => {
+        if *b {
+          Ok(char::default().into())
+        } else {
+          Err(NoElement)
+        }
+      }
+      Predicate::Eq(e) => Ok(e.clone()),
+      Predicate::Range { left, right } => {
+        if left.is_some() {
+          Ok(left.as_ref().unwrap().clone())
+        } else {
+          let r: u8 = right.as_ref().unwrap().clone().into() as u8;
+          if r != 0 {
+            Ok(T::from((r - 1) as char))
+          } else {
+            Err(NoElement)
+          }
+        }
+      }
+      Predicate::InSet(els) => {
+        if els.len() == 0 {
+          Err(NoElement)
+        } else {
+          Ok(els[0].clone())
+        }
+      }
+      _ => unimplemented!()
+    }
   }
 }
 
