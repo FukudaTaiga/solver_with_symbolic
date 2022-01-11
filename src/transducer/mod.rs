@@ -28,7 +28,7 @@ mod macros {
       $variables:expr,
       {
         -> $initial:ident
-        $(, ($source:ident, $predicate:expr) -> [$( ( $target:ident, $update:expr ) )*] ),*
+        $(, ($source:ident, $predicate:expr) -> [$( ( $target:ident, $update:expr ) )*] )*
       },
       { $( $fs:ident -> $output:expr ),* }
     ) => {{
@@ -53,6 +53,7 @@ pub(crate) mod tests {
   use super::*;
   use crate::{
     regular::regex::Regex,
+    smt2::{ReplaceTarget, Transduction, TransductionOp},
     state::StateMachine,
     tests::helper::*,
     util::{CharWrap, Domain},
@@ -102,6 +103,7 @@ pub(crate) mod tests {
           (q.clone(), var_map)
         },
         move |possibilities| {
+          eprintln!("{:#?}", possibilities);
           let mut results = vec![];
           possibilities.into_iter().for_each(|(q, f)| {
             if let Some(output) = self.output_function.get(&q) {
@@ -150,7 +152,7 @@ pub(crate) mod tests {
         assert!({
           let result = results.contains(&expected);
           if !result {
-            eprintln!("{:#?}", $sst);
+            eprintln!("{:?}", $sst);
             eprintln!("expected{:?}", expected);
             eprintln!("results{:?}", results);
           }
@@ -158,56 +160,29 @@ pub(crate) mod tests {
         });
       )+
     };
+  }
+
+  macro_rules! assertion {
     (
-      sst: $sst:expr,
-      vars: $vars:expr,
-      cases: [
-        $(
-          $input:expr => ( $output:expr, { $( $var:ident -> $var_expected:expr ),* } )
-        ),*
-      ],
-      $(
-        rejects: [
-          $(
-            $input_emp:expr
-          ),*
-        ],
-      )?
-      wrap
-    ) => {
-      $(
-        let input = to_charwrap($input);
-        let results = $sst.run_with_var(&$vars, &input);
-        let output = to_charwrap($output);
-        let expected = (output, HashMap::from([
-          $(
-            (
-              $var.clone(),
-              {
-                let v = to_charwrap($var_expected);
-                Vec::from(&v[..v.len().max(1) - 1])
-              }
-            )
-          ),*
-        ]));
-        assert!({
-          let result = results.contains(&expected);
-          if !result {
-            eprintln!("{:#?}", $sst);
-            eprintln!("expected{:?}", expected);
-            eprintln!("results{:?}", results);
-          }
-          result
-        });
-      )*
-      $(
-        $(
-          let input = to_charwrap($input_emp);
-          let results = $sst.run_with_var(&$vars, &input);
-          assert!(results.is_empty());
-        )*
-      )?
-    };
+      $sst:expr,
+      [$( $input:expr ),+],
+      $var_len_expected:expr,
+      $expected_output:expr
+    ) => {{
+      let run = run!($sst, [$( $input ),+], wrap);
+      let var_len_is_expected = $sst.variables.len() == $var_len_expected;
+      if !var_len_is_expected {
+        eprintln!("{:#?}", $sst);
+        eprintln!("var len\nexpected: {}, result: {}", $var_len_expected, $sst.variables.len());
+      }
+      assert!(var_len_is_expected);
+      let result = run.len() == 1 && run[0] == $expected_output;
+      if !result {
+        eprintln!("{:#?}", $sst);
+        eprintln!("output\nexpected: {:?}\nresult: {:?}", $expected_output, run);
+      }
+      assert!(result);
+    }};
   }
 
   #[test]
@@ -216,8 +191,8 @@ pub(crate) mod tests {
     let to = to_replacer("xyz");
 
     let rev = VariableImpl::new();
-    let sst =
-      Builder::identity(&VariableImpl::new()).merge(Builder::reverse(&VariableImpl::new()), &rev);
+    let mut sst = Builder::identity(&VariableImpl::new());
+    sst.merge(Builder::reverse(&VariableImpl::new()), &rev);
     check_merge! {
       sst: sst,
       vars: HashSet::from([rev.clone()]),
@@ -231,7 +206,7 @@ pub(crate) mod tests {
     }
 
     let one = VariableImpl::new();
-    let sst = sst.merge(Builder::replace_reg(from.clone(), to.clone()), &one);
+    sst.merge(Builder::replace_reg(from.clone(), to.clone()), &one);
     check_merge! {
       sst: sst,
       vars: HashSet::from([rev.clone(), one.clone()]),
@@ -245,7 +220,7 @@ pub(crate) mod tests {
     }
 
     let all = VariableImpl::new();
-    let sst = sst.merge(Builder::replace_all_reg(from, to), &all);
+    sst.merge(Builder::replace_all_reg(from, to), &all);
     check_merge! {
       sst: sst,
       vars: HashSet::from([rev.clone(), one.clone(), all.clone()]),
@@ -275,86 +250,158 @@ pub(crate) mod tests {
   }
 
   #[test]
-  fn duplicating_correctly() {
-    let mut vars = HashSet::new();
-    let result = VariableImpl::new();
-    vars.insert(VariableImpl::clone(&result));
-    let sst = Builder::identity(&result);
-    assert!(sst.states().len() == 1 && sst.variables().len() == 1);
-    let sst = sst.merge(Builder::constant("abc"), &result);
-    let sst_ = sst.clone();
-    check_merge! {
-      sst: sst_,
-      vars: HashSet::new(),
-      cases: [
-        "xyz" => ("xyzabc", {})
-      ]
+  fn generate_simple() {
+    let builder = Builder::init();
+
+    let cons = Transduction(vec![TransductionOp::Str("abc".to_owned())]);
+    let sst = builder.generate(1, cons);
+    assertion!(sst, ["prefix"], 1 + 0, to_charwrap(["prefix", "abc"]));
+
+    let cons = Transduction(vec![TransductionOp::Var(0)]);
+    let sst = builder.generate(1, cons);
+    assertion!(sst, ["prefix"], 1 + 1, to_charwrap(["prefix", "prefix"]));
+
+    let cons = Transduction(vec![TransductionOp::Reverse(0)]);
+    let sst = builder.generate(1, cons);
+    assertion!(sst, ["prefix"], 1 + 1, to_charwrap(["prefix", "xiferp"]));
+
+    let cons = Transduction(vec![TransductionOp::Replace(
+      0,
+      Regex::seq("p"),
+      ReplaceTarget::Str("r".to_owned()),
+    )]);
+    let sst = builder.generate(1, cons);
+    assertion! {
+      sst,
+      ["prefix,prefix"],
+      1 + 3,
+      to_charwrap(["prefix,prefix", "rrefix,prefix"])
+    };
+
+    let cons = Transduction(vec![TransductionOp::Replace(
+      1,
+      Regex::seq("0"),
+      ReplaceTarget::Var(0),
+    )]);
+    let sst = builder.generate(2, cons);
+    assertion! {
+      sst,
+      ["prefix", "0one0"],
+      1 + 3 + 1,
+      to_charwrap(["prefix", "0one0", "prefixone0"])
+    };
+
+    let cons = Transduction(vec![TransductionOp::ReplaceAll(
+      0,
+      Regex::seq("p"),
+      ReplaceTarget::Str("r".to_owned()),
+    )]);
+    let sst = builder.generate(1, cons);
+    assertion! {
+      sst,
+      ["prefix,prefix"],
+      1 + 3,
+      to_charwrap(["prefix,prefix", "rrefix,rrefix"])
+    };
+
+    let cons = Transduction(vec![TransductionOp::ReplaceAll(
+      1,
+      Regex::seq("0"),
+      ReplaceTarget::Var(0),
+    )]);
+    let sst = builder.generate(2, cons);
+    assertion! {
+      sst,
+      ["prefix", "0one0"],
+      1 + 3 + 1,
+      to_charwrap(["prefix", "0one0", "prefixoneprefix"])
+    };
+
+    let cons = Transduction(vec![
+      TransductionOp::Var(0),
+      TransductionOp::Var(1),
+      TransductionOp::Var(0),
+    ]);
+    let sst = builder.generate(2, cons);
+    assertion! {
+      sst,
+      ["one", "two"],
+      1 + 1 + 1,
+      to_charwrap(["one", "two", "onetwoone"])
     };
   }
 
   #[test]
-  fn chain() {
-    let replace_from = Regex::seq("abc").or(Regex::seq("kkk"));
-    let replace_to = to_replacer("xyz");
+  /* including test of chain, chain_output */
+  fn generate() {
+    let builder = Builder::init();
 
-    let var = VariableImpl::new();
-    let vars = HashSet::from([var.clone()]);
+    let cons = Transduction(vec![TransductionOp::Var(0), TransductionOp::Reverse(0)]);
+    let sst = builder.generate(1, cons);
+    assertion! {
+      sst,
+      ["abc"],
+      /* var: prefix + 0 id + 0 rev */
+      1 + 1 + 1,
+      to_charwrap(["abc", "abccba"])
+    };
 
-    let sst = Builder::identity(&VariableImpl::new())
-      .merge(Builder::replace_reg(replace_from, replace_to), &var);
-    let sst_ = sst.clone().chain_output(vec![], HashSet::new());
-    check_merge! {
-      sst: sst_,
-      vars: vars,
-      cases: [
-        &["abcabc"] => (&["abcabc"], { var -> &["xyzabc"] }),
-        &["abdkkkkhjkkkk"] => (&["abdkkkkhjkkkk"], { var -> &["abdxyzkhjkkkk"] })
-      ],
-      rejects: [],
-      wrap
+    let cons = Transduction(vec![
+      TransductionOp::Var(0),
+      TransductionOp::ReplaceAll(1, Regex::seq("abc"), ReplaceTarget::Str("xyz".to_owned())),
+    ]);
+    let sst = builder.generate(2, cons);
+    assertion! {
+      sst,
+      ["kkk", "wwwabcababcxyz"],
+      /* var: prefix + 0 id + 1 replace */
+      1 + 1 + 3,
+      to_charwrap(["kkk", "wwwabcababcxyz", "kkkwwwxyzabxyzxyz"])
     }
-    let sst = sst.chain(Builder::reverse(&VariableImpl::new()));
-    let sst_ = sst.clone().chain_output(vec![], HashSet::new());
-    check_merge! {
-      sst: sst_,
-      vars: vars,
-      cases: [
-        &["abcabc", "edf"] => (&["abcabc", "fde"], { var -> &["xyzabc"] }),
-        &["abdkkkkhjkkkk", "palindromemordnilap"] => (
-          &["abdkkkkhjkkkk", "palindromemordnilap"], { var -> &["abdxyzkhjkkkk"] }
-        )
-      ],
-      rejects: [ &["aaaa"], &["abdkkkkhjkkkk"] ],
-      wrap
+
+    let cons = Transduction(vec![
+      TransductionOp::Var(0),
+      TransductionOp::ReplaceAll(2, Regex::seq("abc"), ReplaceTarget::Str("xyz".to_owned())),
+      TransductionOp::Reverse(1),
+    ]);
+    let sst = builder.generate(3, cons);
+    assertion! {
+      sst,
+      ["https", "http", "wwwabcababcxyz"],
+      /* var: prefix + 0 id + 2 replace + 1 rev */
+      1 + 1 + 3 + 1,
+      to_charwrap(["https", "http", "wwwabcababcxyz", "httpswwwxyzabxyzxyzptth"])
     }
-    let replace_from = Regex::seq("start1")
-      .or(Regex::seq("start2"))
-      .concat(Regex::all().star())
-      .concat(Regex::seq("end"));
-    let replace_to = to_replacer("");
-    let sst = sst.chain(Builder::replace_all_reg(replace_from, replace_to));
-    let sst_ = sst.chain_output(vec![], HashSet::new());
-    check_merge! {
-      sst: sst_,
-      vars: vars,
-      cases: [
-        &["abcabc", "abcabc", "abcabc"] => (
-          &["abcabc", "cbacba", "abcabc"], { var -> &["xyzabc"] }
-        ),
-        &[
-          "abdkkkkhjkkkk",
-          "palindromemordnilap",
-          "nottrancate,start1trancate1end,start2trancate2end,nottrancate"
-        ] => (
-          &[
-            "abdkkkkhjkkkk",
-            "palindromemordnilap",
-            "nottrancate,,,nottrancate"
-          ], { var -> &["abdxyzkhjkkkk"] }
-        )
-      ],
-      rejects: [ &["aaaa", "aaaa"] ],
-      wrap
+
+    let cons = Transduction(vec![
+      TransductionOp::Var(0),
+      TransductionOp::Replace(3, Regex::seq("e"), ReplaceTarget::Var(0)),
+      TransductionOp::Str("plp".to_owned()),
+      TransductionOp::ReplaceAll(3, Regex::seq("e"), ReplaceTarget::Var(2)),
+      TransductionOp::Reverse(0),
+    ]);
+    let sst = builder.generate(4, cons);
+    let mut prefixes = vec![
+      "0zero".to_owned(),
+      "1one".to_owned(),
+      "2two".to_owned(),
+      "3three".to_owned(),
+    ];
+    let result = format!(
+      "{}{}{}{}{}",
+      prefixes[0],
+      prefixes[3].to_owned().replacen("e", &prefixes[0], 1),
+      "plp",
+      prefixes[3].to_owned().replace("e", &prefixes[2]),
+      &prefixes[0].chars().rev().collect::<String>()
+    );
+    prefixes.push(result);
+    assertion! {
+      sst,
+      ["0zero", "1one", "2two", "3three"],
+      /* var: prefix + 0 id + 3 replace + 3 replaceall + 2 id + 0 rev */
+      1 + 1 + 3 + 3 + 1 + 1,
+      to_charwrap(prefixes.iter().map(|s| s.as_ref()))
     }
   }
 }

@@ -38,13 +38,14 @@ where
     final_states: HashSet<S>,
     transition: HashMap<Source<B, S>, Vec<Target<F, S>>>,
   ) -> Self {
-    Self {
+    let mut sft = Self {
       states,
       initial_state,
       final_states,
       transition,
-    }
-    .minimize()
+    };
+    sft.minimize();
+    sft
   }
 
   pub fn run<'a>(&self, input: impl IntoIterator<Item = &'a D>) -> Vec<Vec<D>>

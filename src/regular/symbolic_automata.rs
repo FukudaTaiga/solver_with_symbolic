@@ -43,6 +43,7 @@ where
   S: State,
 {
   fn default() -> Self {
+    /* default regex .* */
     super::macros::sfa! {
       { state },
       { -> state, (state, B::top()) -> [state] },
@@ -80,13 +81,14 @@ where
       target.push(p2);
     }
 
-    Self {
+    let mut sfa = Self {
       states,
       initial_state,
       final_states,
       transition,
-    }
-    .minimize()
+    };
+    sfa.minimize();
+    sfa
   }
 
   pub fn run<'a>(&self, input: impl IntoIterator<Item = &'a B::Domain>) -> bool
@@ -110,7 +112,7 @@ where
     let mut result = None;
     let mut paths = vec![(self.initial_state(), vec![])];
     while let Some((state, path)) = paths.pop() {
-      if self.final_set().contains(state) {
+      if self.final_states.contains(state) {
         result = Some(path);
         break;
       }
@@ -293,7 +295,7 @@ where
       );
     });
     transition.insert(
-      (S::clone(&dead_state), B::all_char()),
+      (S::clone(&dead_state), B::top()),
       vec![S::clone(&dead_state)],
     );
 
@@ -825,18 +827,19 @@ mod tests {
     }
     impl<T: Domain, S: State> SymFa<T, RegexPredicate<T>, S> {
       /** assuming given sfa has been minimized */
-      pub fn to_reg(self) -> Regex<T> {
+      pub fn to_reg(mut self) -> Regex<T> {
         if self.states.len() == 0 {
           unreachable!()
         } else if self.states.len() == 1 {
           Regex::empty()
         } else if self.states.len() == 2 {
+          self.minimize();
           let Self {
             states: _,
             initial_state,
             mut final_states,
             transition,
-          } = self.minimize();
+          } = self;
 
           let initial_state = initial_state;
           let mut final_states = final_states.drain();
@@ -1024,7 +1027,7 @@ mod tests {
   basics! {
     names: [pre_image_id_1, pre_image_cnst_1, pre_image_rev_1],
     reg: Regex::seq("xyz")
-    .or(Regex::range(Some('o'), Some('r')).star()),
+      .or(Regex::range(Some('o'), Some('r')).star()),
     id: {
       accepts: ["xyz", "ooqppq", ""],
       rejects: ["xyz___ddd", "opqr", "abcdefg"]

@@ -14,6 +14,10 @@ pub trait FunctionTerm: Debug + Eq + Hash + Clone {
 
   fn constant(a: Self::Domain) -> Self;
 
+  fn separator() -> Self {
+    Self::constant(Self::Domain::separator())
+  }
+
   fn apply<'a>(&'a self, arg: &'a Self::Domain) -> &'a Self::Domain;
 
   /** functional composition of self (other (x)) */
@@ -109,7 +113,7 @@ impl VariableImpl {
 }
 impl Debug for VariableImpl {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_tuple("X").field(&self.0).finish()
+    f.write_fmt(format_args!("X({})", self.0))
   }
 }
 
@@ -159,12 +163,14 @@ pub type FunctionTermImpl<T> = Lambda<Predicate<T>>;
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::collections::{
-    hash_map::{DefaultHasher, RandomState},
-    HashSet,
+  use std::{
+    collections::{
+      hash_map::{DefaultHasher, RandomState},
+      HashSet,
+    },
+    hash::Hasher,
+    iter::FromIterator
   };
-  use std::hash::Hasher;
-  use std::iter::FromIterator;
 
   #[test]
   fn new_var_is_new() {

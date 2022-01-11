@@ -76,11 +76,11 @@ mod tests {
       s.chars().map(|c| OutputComp::A(T::from(c))).collect()
     }
 
-    pub(crate) fn to_charwrap<T: Domain>(vs: &[&str]) -> Vec<T> {
+    pub(crate) fn to_charwrap<'a>(vs: impl IntoIterator<Item = &'a str>) -> Vec<CharWrap> {
       vs.into_iter()
         .map(|s| {
-          let mut w: Vec<_> = s.chars().map(|c| T::from(c)).collect();
-          w.push(T::separator());
+          let mut w: Vec<_> = s.chars().map(|c| CharWrap::from(c)).collect();
+          w.push(CharWrap::separator());
           w
         })
         .reduce(|mut acc, v| {
@@ -89,9 +89,31 @@ mod tests {
         })
         .unwrap_or(vec![])
     }
+
+    macro_rules! run {
+      ($machine:expr, [$( $input:expr ),+]) => {{
+        let mut input = vec![];
+        $(
+          input.extend($input.chars());
+        )+
+        $machine.run(&input)
+      }};
+      ($machine:expr, [$( $input:expr ),+], wrap) => {{
+        use crate::util::CharWrap;
+        let mut input = vec![];
+        $(
+          input.extend($input.chars().map(|c| CharWrap::from(c)));
+          input.push(CharWrap::separator());
+        )+
+        $machine.run(&input)
+      }};
+    }
+
+    pub(crate) use run;
   }
 
   #[test]
+  #[ignore]
   fn smt2_2_sst_simple() {
     let input = r#"
       (declare-const x0 String)
@@ -108,6 +130,7 @@ mod tests {
   }
 
   #[test]
+  #[ignore]
   fn smt2_2_sst_complex() {
     let input = r#"
       (declare-const x0 String)

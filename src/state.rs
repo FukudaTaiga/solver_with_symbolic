@@ -89,27 +89,15 @@ pub trait StateMachine: Sized {
   fn transition_mut(&mut self)
     -> &mut HashMap<(Self::StateType, Self::BoolAlg), Vec<Self::Target>>;
 
-  fn minimize(mut self) -> Self {
-    let mut stack = vec![self.initial_state()];
-    let mut reachables = vec![];
-    while let Some(state) = stack.pop() {
-      reachables.push(state.clone());
-
-      for ((s, phi), target) in self.transition() {
-        if s == state && phi.satisfiable() {
-          for t in target {
-            if !reachables.contains(t.to_state()) && !stack.contains(&t.to_state()) {
-              stack.push(t.to_state());
-            }
-          }
-        }
-      }
-    }
-
-    *self.states_mut() = reachables.into_iter().collect();
+  fn minimize(&mut self) {
+    *self.states_mut() = self
+      .reachables(self.initial_state())
+      .into_iter()
+      .cloned()
+      .collect();
     *self.transition_mut() = self
       .transition()
-      .iter()
+      .into_iter()
       .filter_map(|((s, phi), target)| {
         self
           .states()
@@ -144,21 +132,25 @@ pub trait StateMachine: Sized {
     let mut reachables = vec![];
 
     while let Some(state) = stack.pop() {
-      reachables.push(state.clone());
-
-      for ((s, _), target) in self.transition() {
-        for t in target {
-          if *t.to_state() == state && !reachables.contains(s) && !stack.contains(s) {
-            stack.push(s.clone());
-          }
+      self.transition().into_iter().for_each(|((s, _), target)| {
+        if !reachables.contains(s)
+          && !stack.contains(s)
+          && target
+            .into_iter()
+            .find(|t| *t.to_state() == state)
+            .is_some()
+        {
+          stack.push(s.clone());
         }
-      }
+      });
+
+      reachables.push(state);
     }
 
     *self.states_mut() = reachables.into_iter().collect();
     *self.transition_mut() = self
       .transition()
-      .iter()
+      .into_iter()
       .filter_map(|((s, phi), target)| {
         self
           .states()
@@ -177,9 +169,7 @@ pub trait StateMachine: Sized {
       .collect();
 
     if self.states().is_empty() {
-      Self::empty()
-    } else {
-      self
+      *self = Self::empty()
     }
   }
 
@@ -196,7 +186,7 @@ pub trait StateMachine: Sized {
             .filter_map(|((p, _), target)| {
               target
                 .into_iter()
-                .find(|t| t.to_state() == state)
+                .find(|t| *t.to_state() == *state)
                 .is_some()
                 .then(|| p)
             }),
@@ -217,7 +207,7 @@ pub trait StateMachine: Sized {
           .transition()
           .into_iter()
           .for_each(|((p, phi), target)| {
-            if p == state && phi.satisfiable() {
+            if *p == *state && phi.satisfiable() {
               stack.extend(target.into_iter().map(|t| t.to_state()));
             }
           });
@@ -299,16 +289,19 @@ pub trait StateMachine: Sized {
       possibilities.clear();
 
       possibilities_.into_iter().for_each(|curr| {
-        self.transition().into_iter().for_each(|(source, target)| {
-          if source.0 == *curr.to_state() && source.1.denote(c) {
-            target.into_iter().for_each(|t| {
-              let next = step_func(&curr, c, t);
-              if !possibilities.contains(&next) {
-                possibilities.push(next);
-              }
-            })
-          }
-        })
+        self
+          .transition()
+          .into_iter()
+          .for_each(|((s, phi), target)| {
+            if *s == *curr.to_state() && phi.denote(c) {
+              target.into_iter().for_each(|t| {
+                let next = step_func(&curr, c, t);
+                if !possibilities.contains(&next) {
+                  possibilities.push(next);
+                }
+              });
+            }
+          });
       });
     });
 
@@ -354,9 +347,11 @@ pub(crate) mod macros {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::collections::hash_map::{DefaultHasher, RandomState};
-  use std::hash::Hasher;
-  use std::iter::FromIterator;
+  use std::{
+    collections::hash_map::{DefaultHasher, RandomState},
+    hash::Hasher,
+    iter::FromIterator,
+  };
 
   #[test]
   fn new_state_is_new() {

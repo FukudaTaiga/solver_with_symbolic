@@ -30,114 +30,122 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
   }
 
   pub fn generate(&self, idx: usize, transduction: Transduction<D, S>) -> Sst<D, S, V> {
+    assert!(transduction.0.len() != 0 && idx != 0);
+
     let mut ssts = Vec::with_capacity(idx - 1);
     let mut identities = HashMap::new();
     let mut reverses = HashMap::new();
     let prefix = V::new();
     for _ in 0..idx {
-      ssts.push(Self::register(&prefix));
+      ssts.push(Self::identity(&prefix));
     }
-    let mut pre_id = 0;
-    let result = V::new();
+    let mut result = vec![
+      OutputComp::X(V::clone(&prefix)),
+      OutputComp::A(D::separator()),
+    ];
 
-    assert!(transduction.0.len() != 0 && idx != 0);
-
-    for transduction_op in transduction.0 {
-      match transduction_op {
+    transduction
+      .0
+      .into_iter()
+      .for_each(|transduction_op| match transduction_op {
         TransductionOp::Var(id) => {
-          identities.entry(id).or_insert({
+          assert!(id < idx);
+
+          /* argument of or_insert(..) is not lazily evaluated */
+          if let Some(var) = identities.get(&id) {
+            result.push(OutputComp::X(V::clone(var)));
+          } else {
             let var = V::new();
-            *ssts.get_mut(id).unwrap() = ssts
-              .get(id)
+            ssts
+              .get_mut(id)
               .unwrap()
-              .clone()
-              .merge(SstBuilder::identity(&var), &result);
-            var
-          });
-          pre_id = id;
+              .merge(SstBuilder::identity(&var), &var);
+            identities.insert(id, V::clone(&var));
+            result.push(OutputComp::X(var));
+          }
         }
         TransductionOp::Str(s) => {
-          *ssts.get_mut(pre_id).unwrap() = ssts
-            .get(pre_id)
-            .unwrap()
-            .clone()
-            .merge(SstBuilder::constant(&s), &result);
-        }
-        TransductionOp::Replace(id, reg, target) => {
-          let replace = match target {
-            ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(D::from(c))).collect(),
-            ReplaceTarget::Var(id) => {
-              let id_var = identities.entry(id).or_insert({
-                let var = V::new();
-                *ssts.get_mut(id).unwrap() = ssts
-                  .get(id)
-                  .unwrap()
-                  .clone()
-                  .merge(SstBuilder::identity(&var), &result);
-                var
-              });
-              vec![OutputComp::X(V::clone(id_var))]
-            }
-          };
-          *ssts.get_mut(id).unwrap() = ssts
-            .get(id)
-            .unwrap()
-            .clone()
-            .merge(SstBuilder::replace_reg(reg, replace), &result);
-          pre_id = id;
-        }
-        TransductionOp::ReplaceAll(id, reg, target) => {
-          let replace = match target {
-            ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(D::from(c))).collect(),
-            ReplaceTarget::Var(id) => {
-              let id_var = identities.entry(id).or_insert({
-                let var = V::new();
-                *ssts.get_mut(id).unwrap() = ssts
-                  .get(id)
-                  .unwrap()
-                  .clone()
-                  .merge(SstBuilder::identity(&var), &var);
-                var
-              });
-              vec![OutputComp::X(V::clone(id_var))]
-            }
-          };
-          *ssts.get_mut(id).unwrap() = ssts
-            .get(id)
-            .unwrap()
-            .clone()
-            .merge(SstBuilder::replace_all_reg(reg, replace), &result);
-          pre_id = id;
+          result.extend(s.chars().map(|c| OutputComp::A(D::from(c))));
         }
         TransductionOp::Reverse(id) => {
-          reverses.entry(id).or_insert({
-            let reverse = V::new();
-            *ssts.get_mut(id).unwrap() = ssts
-              .get(id)
+          assert!(id < idx);
+
+          if let Some(var) = reverses.get(&id) {
+            result.push(OutputComp::X(V::clone(var)));
+          } else {
+            let var = V::new();
+            ssts
+              .get_mut(id)
               .unwrap()
-              .clone()
-              .merge(SstBuilder::reverse(&reverse), &result);
-            reverse
-          });
-          pre_id = id;
+              .merge(SstBuilder::reverse(&var), &var);
+            reverses.insert(id, V::clone(&var));
+            result.push(OutputComp::X(var));
+          }
+        }
+        TransductionOp::Replace(id, reg, target) => {
+          assert!(id < idx);
+
+          let replace = match target {
+            ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(D::from(c))).collect(),
+            ReplaceTarget::Var(target_id) => {
+              assert!(target_id < id);
+              if let Some(id_var) = identities.get(&target_id) {
+                vec![OutputComp::X(V::clone(id_var))]
+              } else {
+                let var = V::new();
+                ssts
+                  .get_mut(target_id)
+                  .unwrap()
+                  .merge(SstBuilder::identity(&var), &var);
+                identities.insert(target_id, V::clone(&var));
+                vec![OutputComp::X(var)]
+              }
+            }
+          };
+          let var = V::new();
+          ssts
+            .get_mut(id)
+            .unwrap()
+            .merge(SstBuilder::replace_reg(reg, replace), &var);
+          result.push(OutputComp::X(var));
+        }
+        TransductionOp::ReplaceAll(id, reg, target) => {
+          assert!(id < idx);
+
+          let replace = match target {
+            ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(D::from(c))).collect(),
+            ReplaceTarget::Var(target_id) => {
+              assert!(target_id < id);
+              if let Some(id_var) = identities.get(&target_id) {
+                vec![OutputComp::X(V::clone(id_var))]
+              } else {
+                let var = V::new();
+                ssts
+                  .get_mut(target_id)
+                  .unwrap()
+                  .merge(SstBuilder::identity(&var), &var);
+                identities.insert(target_id, V::clone(&var));
+                vec![OutputComp::X(var)]
+              }
+            }
+          };
+          let var = V::new();
+          ssts
+            .get_mut(id)
+            .unwrap()
+            .merge(SstBuilder::replace_all_reg(reg, replace), &var);
+          result.push(OutputComp::X(var));
         }
         TransductionOp::UserDef(_) => unimplemented!(),
-      }
-    }
+      });
+
+    result.push(OutputComp::A(D::separator()));
 
     ssts
       .into_iter()
-      .reduce(|result, sst| result.chain(sst))
+      .reduce(|result, sst| result.chain(sst, &prefix))
       .unwrap()
-      .chain_output(
-        vec![
-          OutputComp::X(V::clone(&prefix)),
-          OutputComp::A(D::separator()),
-          OutputComp::X(V::clone(&result)),
-          OutputComp::A(D::separator()),
-        ],
-        HashSet::from([prefix, result]),
-      )
+      .chain_output(result)
   }
 
   pub fn replace_all_reg(reg: Regex<D>, replace: Vec<OutputComp<D, V>>) -> Sst<D, S, V> {
@@ -185,21 +193,16 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
         v
       }
     };
+    let reset_seq = {
+      let mut v = Vec::with_capacity(2 + replace_update.len());
+      v.push(UpdateComp::X(V::clone(&rep)));
+      v.extend(replace_update.iter().cloned());
+      v.push(UpdateComp::F(Lambda::identity()));
+      v
+    };
     let reset = super::macros::make_update! {
-      rep -> {
-        let mut v = Vec::with_capacity(2 + replace_update.len());
-        v.push(UpdateComp::X(V::clone(&rep)));
-        v.extend(replace_update.iter().cloned());
-        v.push(UpdateComp::F(Lambda::identity()));
-        v
-      },
-      not_rep -> {
-        let mut v = Vec::with_capacity(2 + replace_update.len());
-        v.push(UpdateComp::X(V::clone(&rep)));
-        v.extend(replace_update.iter().cloned());
-        v.push(UpdateComp::F(Lambda::identity()));
-        v
-      }
+      rep -> reset_seq.clone(),
+      not_rep -> reset_seq
     };
     sfa.final_set().into_iter().for_each(|p| {
       /*
@@ -236,9 +239,13 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
       rep -> vec![UpdateComp::X(V::clone(&not_rep))],
       not_rep -> vec![UpdateComp::X(V::clone(&not_rep)), UpdateComp::F(Lambda::identity())]
     };
+    let reset_seq = vec![
+      UpdateComp::X(V::clone(&not_rep)),
+      UpdateComp::F(Lambda::identity()),
+    ];
     let reset = super::macros::make_update! {
-      rep -> vec![UpdateComp::X(V::clone(&not_rep)), UpdateComp::F(Lambda::identity())],
-      not_rep -> vec![UpdateComp::X(V::clone(&not_rep)), UpdateComp::F(Lambda::identity())]
+      rep -> reset_seq.clone(),
+      not_rep -> reset_seq
     };
     sfa.transition().into_iter().for_each(|((p, phi), target)| {
       if !sfa.final_set().contains(p) {
@@ -368,12 +375,12 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
     let update = super::macros::make_update! {
       not_rep -> vec![UpdateComp::X(V::clone(&not_rep)), UpdateComp::F(Lambda::identity())]
     };
-    let reset = super::macros::make_update! {
-      rep -> vec![UpdateComp::X(V::clone(&not_rep)), UpdateComp::F(Lambda::identity())],
-      not_rep -> vec![UpdateComp::X(V::clone(&not_rep)), UpdateComp::F(Lambda::identity())]
-    };
     let start = super::macros::make_update! {
       rep -> vec![UpdateComp::X(V::clone(&not_rep))],
+      not_rep -> vec![UpdateComp::X(V::clone(&not_rep)), UpdateComp::F(Lambda::identity())]
+    };
+    let reset = super::macros::make_update! {
+      rep -> vec![UpdateComp::X(V::clone(&not_rep)), UpdateComp::F(Lambda::identity())],
       not_rep -> vec![UpdateComp::X(V::clone(&not_rep)), UpdateComp::F(Lambda::identity())]
     };
     sfa.transition().into_iter().for_each(|((p, phi), target)| {
@@ -447,14 +454,14 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
       HashSet::from([V::clone(var)]),
       {
         -> initial,
-        (initial, Predicate::top()) -> [(
+        (initial, Predicate::all_char()) -> [(
           initial,
           super::macros::make_update! {
-            var -> vec![UpdateComp::X(V::clone(&var)), UpdateComp::F(Lambda::identity())]
+            var -> vec![UpdateComp::X(V::clone(var)), UpdateComp::F(Lambda::identity())]
           }
         )]
       },
-      { initial -> vec![OutputComp::X(V::clone(&var))] }
+      { initial -> vec![OutputComp::X(V::clone(var))] }
     }
   }
 
@@ -464,7 +471,7 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
       HashSet::from([V::clone(var)]),
       {
         -> initial,
-        (initial, Predicate::top()) -> [(
+        (initial, Predicate::all_char()) -> [(
           initial,
           super::macros::make_update! {
             var -> vec![UpdateComp::F(Lambda::identity()), UpdateComp::X(V::clone(var))]
@@ -481,26 +488,9 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
       HashSet::new(),
       {
         -> initial,
-        (initial, Predicate::top()) -> [(initial, super::macros::make_update! {})]
+        (initial, Predicate::all_char()) -> [(initial, super::macros::make_update! {})]
       },
       { initial -> output.chars().map(|c| OutputComp::A(D::from(c))).collect() }
-    }
-  }
-
-  fn register(var: &V) -> Sst<D, S, V> {
-    super::macros::sst! {
-      { initial },
-      HashSet::from([V::clone(var)]),
-      {
-        -> initial,
-        (initial, Predicate::all_char()) -> [(
-          initial,
-          super::macros::make_update! {
-            var -> vec![UpdateComp::X(V::clone(&var)), UpdateComp::F(Lambda::identity())]
-          }
-        )]
-      },
-      { initial -> vec![OutputComp::X(V::clone(&var))] }
     }
   }
 }
@@ -521,25 +511,28 @@ mod tests {
       #[test]
       fn $id() {
           let sst = Builder::identity(&VariableImpl::new());
+          assert_eq!(sst.variables().len(), 1);
           $(
-            assert!(sst.run(&chars($case)).contains(&chars($case)));
+            assert!(run!(sst, [$case]).contains(&chars($case)));
           )+
       }
 
       #[test]
       fn $cnst() {
           let sst = Builder::constant($constant);
+          assert_eq!(sst.variables().len(), 0);
           $(
-            assert!(sst.run(&chars($case)).contains(&chars($constant)));
+            assert!(run!(sst, [$case]).contains(&chars($constant)));
           )+
       }
 
       #[test]
       fn $rev() {
           let sst = Builder::reverse(&VariableImpl::new());
+          assert_eq!(sst.variables().len(), 1);
           $(
             assert!(
-              sst.run(&chars($case)).contains(&$case.chars().rev().collect())
+              run!(sst, [$case]).contains(&$case.chars().rev().collect())
             );
           )+
       }
@@ -556,10 +549,11 @@ mod tests {
     ) => {
       #[test]
       fn $name() {
-        let replace = Builder::replace_reg(Regex::seq($from), to_replacer($to));
-        eprintln!("{:?}", replace);
+        let sst = Builder::replace_reg(Regex::seq($from), to_replacer($to));
+        assert_eq!(sst.variables().len(), 2);
+        eprintln!("{:?}", sst);
         $(
-          let result = replace.run(&chars($case));
+          let result = run!(sst, [$case]);
           eprintln!("result: {:?}", result);
           assert!(
             result.contains(&chars(&$case.replacen($from, $to, 1)))
@@ -569,10 +563,11 @@ mod tests {
 
       #[test]
       fn $name_all() {
-        let replace_all = Builder::replace_all_reg(Regex::seq($from), to_replacer($to));
-        eprintln!("{:?}", replace_all);
+        let sst = Builder::replace_all_reg(Regex::seq($from), to_replacer($to));
+        assert_eq!(sst.variables().len(), 2);
+        eprintln!("{:?}", sst);
         $(
-          let result = replace_all.run(&chars($case));
+          let result = run!(sst, [$case]);
           eprintln!("result: {:?}", result);
           assert!(
             result.contains(&chars(&$case.replace($from, $to)))

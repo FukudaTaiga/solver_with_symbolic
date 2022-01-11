@@ -12,6 +12,21 @@ use std::{
   hash::Hash
 };
 
+pub fn convert<D: Domain>(reg: Regex<D>) -> Regex<char> {
+  match reg {
+    Regex::Empty => Regex::Empty,
+    Regex::Epsilon => Regex::Epsilon,
+    Regex::All => Regex::All,
+    Regex::Element(e) => Regex::Element(e.into()),
+    Regex::Range(l, r) => Regex::Range(l.map(|e| e.into()), r.map(|e| e.into())),
+    Regex::Concat(vec) => Regex::Concat(vec.into_iter().map(|r| convert(r)).collect()),
+    Regex::Or(vec) => Regex::Or(vec.into_iter().map(|r| convert(r)).collect()),
+    Regex::Inter(vec) => Regex::Inter(vec.into_iter().map(|r| convert(r)).collect()),
+    Regex::Star(reg) => Regex::Star(Box::new(convert(*reg))),
+    Regex::Not(reg) => Regex::Not(Box::new(convert(*reg))),
+  }
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Regex<T: PartialOrd> {
   Empty,

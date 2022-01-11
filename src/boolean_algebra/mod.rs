@@ -43,8 +43,7 @@ pub trait BoolAlg: Debug + Eq + Hash + Clone {
   fn with_lambda(&self, f: &Self::Term) -> Self;
 
   fn all_char() -> Self {
-    //Self::char(Self::Domain::separator()).not()
-    Self::top()
+    Self::char(Self::Domain::separator()).not()
   }
 
   fn boolean(b: bool) -> Self {
@@ -53,6 +52,10 @@ pub trait BoolAlg: Debug + Eq + Hash + Clone {
     } else {
       Self::bot()
     }
+  }
+
+  fn separator() -> Self {
+    Self::char(Self::Domain::separator())
   }
 
   /** apply argument to self and return the result */

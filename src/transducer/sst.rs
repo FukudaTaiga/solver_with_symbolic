@@ -2,8 +2,8 @@ use super::term::{FunctionTerm, FunctionTermImpl, OutputComp, UpdateComp, Variab
 use crate::boolean_algebra::{BoolAlg, Predicate};
 use crate::state::{self, State, StateMachine};
 use crate::util::{
-  extention::{ImmutableValueMap, MultiMap},
   Domain,
+  extention::{ImmutableValueMap}
 };
 use std::{
   collections::{HashMap, HashSet},
@@ -51,14 +51,15 @@ where
     output_function: HashMap<S, Output<D, V>>,
     transition: Transition<B, F, S, V>,
   ) -> Self {
-    Self {
+    let mut sst = Self {
       states,
       variables,
       initial_state,
       output_function,
       transition,
-    }
-    .minimize()
+    };
+    sst.minimize();
+    sst
   }
 
   /**
@@ -109,7 +110,7 @@ where
               .into_iter()
               .flat_map(|o| match o {
                 OutputComp::A(a) => vec![D::clone(a)],
-                OutputComp::X(x) => f.get(x).unwrap_or(&Vec::new()).clone(),
+                OutputComp::X(x) => f.get(x).unwrap_or(&vec![]).clone(),
               })
               .collect();
 
@@ -127,24 +128,21 @@ where
     &self.variables
   }
 
+  pub fn variables_mut(&mut self) -> &mut HashSet<V> {
+    &mut self.variables
+  }
+
   /**
    * merging two sst.
    * output function is first one's,
    * and second one's is into the given result variable.
+   * if result -> seq exists, concatenate output2 on it.
    * to say short, create a new sst that is based on first sst,
    * but have second one's info like transition, variables, output.
-   * the sst will refuse a input if either one sst refuse it.
+   * the sst will refuse a input if either one sst does.
    */
-  pub fn merge(self, other: Self, result: &V) -> Self {
+  pub(crate) fn merge(&mut self, other: Self, result: &V) {
     let error_msg = "Uncontrolled states exist. this will happen for developper's error";
-
-    let Self {
-      states: s1,
-      mut variables,
-      initial_state: i1,
-      output_function: o1,
-      transition: t1,
-    } = self;
 
     let Self {
       states: s2,
@@ -154,91 +152,86 @@ where
       transition: t2,
     } = other;
 
-    let cartesian: HashMap<_, _> = s1
+    let cartesian: HashMap<_, _> = self
+      .states
       .iter()
       .flat_map(|p| s2.iter().map(move |q| ((p, q), S::new())))
       .collect();
 
-    let initial_state = S::clone(cartesian.get(&(&i1, &i2)).expect(error_msg));
-
-    variables.extend(v2.into_iter());
-    variables.insert(V::clone(result));
-
-    let mut transition: Transition<B, F, S, V> = t1
+    let mut transition: Transition<B, F, S, V> = self
+      .transition
       .iter()
-      .flat_map(|((p1, phi1), v1)| {
+      .flat_map(|((p1, phi1), target1)| {
         t2.iter()
-          .map(|((p2, phi2), v2)| {
-            let source = S::clone(cartesian.get(&(p1, p2)).expect(error_msg));
-            let target = v1
-              .into_iter()
-              .flat_map(|(q1, u1)| {
-                v2.into_iter()
-                  .map(|(q2, u2)| {
-                    let target = S::clone(cartesian.get(&(q1, q2)).expect(error_msg));
+          .filter_map(|((p2, phi2), target2)| {
+            let phi = phi1.and(phi2);
 
-                    let update = u1
-                      .iter()
-                      .chain(u2.into_iter())
-                      .map(|(v, uc)| (V::clone(&v), uc.clone()))
-                      .collect();
+            phi.satisfiable().then(|| {
+              let p = S::clone(cartesian.get(&(p1, p2)).expect(error_msg));
+              let target = target1
+                .into_iter()
+                .flat_map(|(q1, update1)| {
+                  target2
+                    .into_iter()
+                    .map(|(q2, update2)| {
+                      let q = S::clone(cartesian.get(&(q1, q2)).expect(error_msg));
 
-                    (target, update)
-                  })
-                  .collect::<Vec<_>>()
-              })
-              .collect();
+                      let mut update = HashMap::with_capacity(update1.len() + update2.len());
+                      update1.into_iter().for_each(|(var, seq)| {
+                        update.insert(V::clone(var), seq.clone());
+                      });
+                      update2.into_iter().for_each(|(var, seq)| {
+                        update.safe_insert(V::clone(var), seq.clone());
+                      });
 
-            ((source, phi1.and(phi2)), target)
+                      (q, update)
+                    })
+                    .collect::<Vec<_>>()
+                })
+                .collect();
+
+              ((p, phi), target)
+            })
           })
           .collect::<Vec<_>>()
       })
       .collect();
 
     let mut output_function = HashMap::new();
-    o1.iter().for_each(|(fs1, output1)| {
+    self.output_function.iter().for_each(|(fs1, output1)| {
       o2.iter().for_each(|(fs2, output2)| {
         let fs = cartesian.get(&(fs1, fs2)).expect(error_msg);
 
-        output_function.insert(S::clone(fs), output1.clone());
+        output_function.safe_insert(S::clone(fs), output1.clone());
 
         let target = transition
-          .entry((S::clone(fs), B::char(D::separator())))
-          .or_default();
-        if target.is_empty() {
-          let mut update_seq = vec![UpdateComp::X(V::clone(result))];
+          .entry((S::clone(fs), B::separator()))
+          .or_insert(vec![(S::clone(fs), HashMap::new())]);
+        target.iter_mut().for_each(|(_, update)| {
+          let update_seq = update
+            .entry(V::clone(result))
+            .or_default();
           update_seq.extend(super::to_update(output2));
-          target.push((
-            S::clone(fs),
-            super::macros::make_update! {
-              result -> update_seq
-            },
-          ));
-        } else {
-          target.iter_mut().for_each(|(_, update)| {
-            let update_seq = update.entry(V::clone(result)).or_insert(vec![]);
-            update_seq.extend(super::to_update(output2));
-          });
-        }
+        });
       });
     });
 
-    let states = cartesian.into_values().collect();
+    let initial_state = S::clone(
+      cartesian
+        .get(&(self.initial_state(), &i2))
+        .expect(error_msg),
+    );
 
-    Self::new(
-      states,
-      variables,
-      initial_state,
-      output_function,
-      transition,
-    )
+    self.states = cartesian.into_values().collect();
+    self.initial_state = initial_state;
+    self.variables.extend(v2.into_iter());
+    self.variables.insert(V::clone(result));
+    self.transition = transition;
+    self.output_function = output_function;
   }
 
-  /*
-   * mainly focus to use in my theory.
-   * link them togeher and separating with T::separator
-   */
-  pub(crate) fn chain(self, other: Self) -> Self {
+  /* mainly focus to use in my theory. */
+  pub(crate) fn chain(self, other: Self, var: &V) -> Self {
     let Self {
       mut states,
       mut variables,
@@ -251,43 +244,28 @@ where
       states: s2,
       variables: v2,
       initial_state: i2,
-      output_function: o2,
+      output_function,
       transition: t2,
     } = other;
 
     states.extend(s2.into_iter());
     variables.extend(v2.into_iter());
-    let res_of_self = V::new();
+    variables.insert(V::clone(var));
 
-    transition.extend(t2.into_iter());
+    t2.into_iter().for_each(|((p, phi), target)| {
+      transition.safe_insert((p, phi), target)
+    });
     o1.into_iter().for_each(|(fs1, out)| {
       let target = transition
-        .entry((fs1, B::char(D::separator())))
+        .entry((fs1, B::separator()))
         .or_insert(vec![(S::clone(&i2), HashMap::new())]);
-      target.iter_mut().for_each(|(s, u)| {
+      target.iter_mut().for_each(|(s, update)| {
         *s = S::clone(&i2);
-        u.safe_insert(V::clone(&res_of_self), super::to_update(&out));
+        let seq = update.entry(V::clone(var)).or_default();
+        seq.extend(super::to_update(&out));
+        seq.push(UpdateComp::F(F::separator()));
       });
     });
-
-    let output_function = o2
-      .into_iter()
-      .map(|(fs, output)| {
-        (
-          fs,
-          [
-            OutputComp::X(V::clone(&res_of_self)),
-            OutputComp::A(D::separator()),
-          ]
-          .iter() //https://doc.rust-lang.org/nightly/edition-guide/rust-2021/IntoIterator-for-arrays.html
-          .cloned()
-          .chain(output.into_iter())
-          .collect(),
-        )
-      })
-      .collect();
-
-    variables.insert(res_of_self);
 
     Self::new(
       states,
@@ -298,13 +276,36 @@ where
     )
   }
 
-  pub fn chain_output(self, output: Output<D, V>, vars: HashSet<V>) -> Self {
-    self.chain(super::macros::sst! {
-      { state },
-      vars,
-      { -> state },
-      { state -> output }
-    })
+  pub fn chain_output(self, output: Output<D, V>) -> Self {
+    let Self {
+      mut states,
+      variables,
+      initial_state,
+      output_function: transition_,
+      mut transition,
+    } = self;
+
+    let end = S::new();
+
+    states.insert(S::clone(&end));
+    transition_.into_iter().for_each(|(fs, _)| {
+      let target = transition
+        .entry((fs, B::separator()))
+        .or_insert(vec![(S::clone(&end), HashMap::new())]);
+      target.iter_mut().for_each(|(s, _)| {
+        *s = S::clone(&end);
+      });
+    });
+
+    let output_function = HashMap::from([(end, output)]);
+
+    Self::new(
+      states,
+      variables,
+      initial_state,
+      output_function,
+      transition,
+    )
   }
 }
 impl<D, B, F, S, V> StateMachine for SymSst<D, B, F, S, V>
