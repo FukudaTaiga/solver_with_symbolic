@@ -98,12 +98,12 @@ where
     self.generalized_run(
       input.into_iter(),
       vec![self.initial_state.clone()],
-      &mut |_, _, next| S::clone(next),
+      |_, _, next| S::clone(next),
       |possibilities| {
-        !&possibilities
+        possibilities
           .into_iter()
-          .collect::<HashSet<_>>()
-          .is_disjoint(&self.final_states)
+          .find(|s| self.final_states.contains(s))
+          .is_some()
       },
     )
   }
@@ -134,14 +134,6 @@ where
     }
 
     result
-  }
-
-  pub fn state_predicate(&self, q: &S) -> B {
-    self
-      .transition
-      .iter()
-      .filter_map(|((p, phi), _)| (*p == *q).then(|| phi))
-      .fold(B::bot(), |phi, psi| phi.or(psi))
   }
 
   pub fn concat(self, other: Self) -> Self {
@@ -349,55 +341,78 @@ where
     macro_rules! step_with_var {
       ( $possibilities:ident,
         $var_name:ident,
+        $to_check:expr,
         | $curr:ident, $var_map:ident $(,$others:ident)* |
       ) => {
         $possibilities
           .into_iter()
           .flat_map(|($curr, $var_map, $($others),*)| {
-            reachables.get(&$curr).unwrap().into_iter().map(move |next| {
-              let mut var_map = $var_map.clone();
-              let target = var_map.entry(($curr, $var_name)).or_insert(vec![]);
-              if target.contains(next) {
-                (*next, var_map, $($others.clone()),*)
-              } else {
-                target.push(next);
-                (*next, var_map, $($others.clone()),*)
-              }
-            })
+            let target_states = reachables.get(&$curr).unwrap();
+
+            target_states.into_iter().filter_map(|next| {
+              $to_check.contains(next).then(|| {
+                let mut var_map = $var_map.clone();
+                let target = var_map.entry(($curr, $var_name)).or_insert(vec![]);
+                if target.contains(next) {
+                  (*next, var_map, $($others.clone()),*)
+                } else {
+                  target.push(next);
+                  (*next, var_map, $($others.clone()),*)
+                }
+              })
+            }).collect::<Vec<_>>()
           })
           .collect()
       };
     }
 
-    for (q, output) in sst.final_set() {
-      let mut possibilities = vec![(&self.initial_state, HashMap::new())];
+    {
+      let to_check: HashSet<_> = self
+        .states
+        .iter()
+        .filter(|s| {
+          reachables
+            .get(s)
+            .unwrap()
+            .iter()
+            .find(|s| self.final_states.contains(s))
+            .is_some()
+        })
+        .collect();
 
-      for oc in output {
-        match oc {
-          OutputComp::A(a) => {
-            possibilities = self.step(possibilities, |(curr, var_map)| {
-              move |((p1, phi), p2)| (*p1 == *curr && phi.denote(a)).then(|| (p2, var_map.clone()))
+      for (q, output) in sst.final_set() {
+        let mut possibilities = vec![(&self.initial_state, HashMap::new())];
+
+        for oc in output {
+          match oc {
+            OutputComp::A(a) => {
+              possibilities = self.step(possibilities, {
+                |(curr, var_map), ((p1, phi), p2)| {
+                  (*p1 == **curr && phi.denote(a) && to_check.contains(p2))
+                    .then(|| (p2, var_map.clone()))
+                }
+              });
+            }
+            OutputComp::X(x) => {
+              possibilities = step_with_var!(possibilities, x, to_check, |curr, var_map|);
+            }
+          }
+        }
+
+        possibilities.into_iter().for_each(|(p, var_map)| {
+          if self.final_states.contains(p) {
+            let mut var_map: Vec<_> = var_map.into_iter().collect();
+            var_map.sort();
+            let tuple = (q, var_map);
+            stack.push(tuple.clone());
+            states.entry(tuple).or_insert({
+              let new_state = S::new();
+              final_states.insert(S::clone(&new_state));
+              new_state
             });
           }
-          OutputComp::X(x) => {
-            possibilities = step_with_var!(possibilities, x, |curr, var_map|);
-          }
-        }
+        });
       }
-
-      possibilities.into_iter().for_each(|(p, var_map)| {
-        if self.final_states.contains(p) {
-          let mut var_map: Vec<_> = var_map.into_iter().collect();
-          var_map.sort();
-          let tuple = (q, var_map);
-          stack.push(tuple.clone());
-          states.entry(tuple).or_insert({
-            let new_state = S::new();
-            final_states.insert(S::clone(&new_state));
-            new_state
-          });
-        }
-      });
     }
 
     eprintln!("start searching");
@@ -407,9 +422,6 @@ where
       {
         if states.len() > 200 {
           eprintln!("states: {:?}", states);
-          // eprintln!("transition: {:?}", transition);
-          // eprintln!("initial_s: {:?}", initial_states);
-          // eprintln!("final_states: {:?}", final_states);
           panic!("psedo stack overflow");
         }
       }
@@ -423,14 +435,27 @@ where
           let mut pre_maps: HashMap<_, Vec<_>> = HashMap::new();
 
           for ((p1, var), nexts) in &var_map {
+            let to_check: HashSet<_> = self
+              .states
+              .iter()
+              .filter(|s| {
+                reachables
+                  .get(s)
+                  .unwrap()
+                  .iter()
+                  .find(|s| nexts.contains(s))
+                  .is_some()
+              })
+              .collect();
             let mut possibilities = vec![(*p1, HashMap::new(), B::top())];
+
             if let Some(seq) = alpha.get(*var) {
               for uc in seq.into_iter() {
                 match uc {
                   UpdateComp::F(lambda) => {
-                    possibilities = self.step(possibilities, |(curr, var_map, var_phi)| {
-                      move |((r1, phi), r2)| {
-                        (*r1 == *curr)
+                    possibilities = self.step(possibilities, {
+                      |(curr, var_map, var_phi), ((r1, phi), r2)| {
+                        (*r1 == **curr && to_check.contains(r2))
                           .then(|| var_phi.and(&phi.with_lambda(lambda)))
                           .and_then(|var_phi| {
                             var_phi
@@ -441,7 +466,8 @@ where
                     });
                   }
                   UpdateComp::X(x) => {
-                    possibilities = step_with_var!(possibilities, x, |curr, var_map, var_phi|);
+                    possibilities =
+                      step_with_var!(possibilities, x, to_check, |curr, var_map, var_phi|);
                   }
                 }
               }
@@ -460,6 +486,7 @@ where
              * if both sst and sfa are minimized, nexts.len() != 0. it cannot panic
              * if nexts.len() over 64, then it will not working => check possibilities consists of all of nexts with iterator.
              */
+            assert!(nexts.len() != 0 && nexts.len() < 64);
             let mut is_nexts_covered: usize = (1 << nexts.len()) - 1;
             possibilities = possibilities
               .into_iter()

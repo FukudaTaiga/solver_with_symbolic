@@ -173,6 +173,14 @@ pub trait StateMachine: Sized {
     }
   }
 
+  fn state_predicate(&self, q: &Self::StateType) -> Self::BoolAlg {
+    self
+      .transition()
+      .into_iter()
+      .filter_map(|((p, phi), _)| (*p == *q).then(|| phi))
+      .fold(Self::BoolAlg::bot(), |phi, psi| phi.or(psi))
+  }
+
   fn reachable_sources<'a>(&'a self, state: &'a Self::StateType) -> HashSet<&'a Self::StateType> {
     let mut reachables = HashSet::new();
     let mut stack = vec![state];
@@ -217,25 +225,26 @@ pub trait StateMachine: Sized {
     reachables
   }
 
-  fn back<Next, F>(&self, possibilities: Vec<Next>, filter_map: impl Fn(Next) -> F) -> Vec<Next>
+  fn back<Next>(
+    &self,
+    possibilities: Vec<Next>,
+    mut filter_map: impl FnMut(&Next, &(Self::StateType, Self::BoolAlg)) -> Option<Next>,
+  ) -> Vec<Next>
   where
-    Next: ToState<Self::StateType> + Clone,
-    F: FnMut(&(Self::StateType, Self::BoolAlg)) -> Option<Next>,
+    Next: ToState<Self::StateType>,
   {
     possibilities
       .into_iter()
       .flat_map(|curr| {
-        let mut fm = filter_map(curr.clone());
         self
           .transition()
           .iter()
-          .filter_map(move |(source, target)| {
+          .filter_map(|(source, target)| {
             target
               .into_iter()
-              .filter(|t| *t.to_state() == *curr.to_state())
-              .next()
+              .find(|t| *t.to_state() == *curr.to_state())
               .is_some()
-              .then(|| fm(source))
+              .then(|| filter_map(&curr, source))
               .flatten()
           })
           .collect::<Vec<_>>()
@@ -243,22 +252,23 @@ pub trait StateMachine: Sized {
       .collect()
   }
 
-  fn step<'a, Next, F>(
+  fn step<'a, Next>(
     &'a self,
     possibilities: Vec<Next>,
-    filter_map: impl Fn(Next) -> F,
+    mut filter_map: impl FnMut(
+      &Next,
+      (&'a (Self::StateType, Self::BoolAlg), &'a Self::Target),
+    ) -> Option<Next>,
   ) -> Vec<Next>
   where
     Next: PartialEq,
-    F: FnMut((&'a (Self::StateType, Self::BoolAlg), &'a Self::Target)) -> Option<Next>,
   {
     let mut possibilities_ = vec![];
 
     possibilities.into_iter().for_each(|curr| {
-      let mut fm = filter_map(curr);
       self.transition().into_iter().for_each(|(source, target)| {
         target.into_iter().for_each(|t| {
-          if let Some(next) = fm((source, t)) {
+          if let Some(next) = filter_map(&curr, (source, t)) {
             if !possibilities_.contains(&next) {
               possibilities_.push(next);
             }
@@ -270,42 +280,29 @@ pub trait StateMachine: Sized {
     possibilities_
   }
 
-  fn generalized_run<'a, Next, F, Output>(
+  fn generalized_run<'a, Next, Output>(
     &self,
-    input: impl Iterator<Item = &'a <Self::BoolAlg as BoolAlg>::Domain>,
-    initial_possibilities: Vec<Next>,
-    step_func: &mut F,
+    mut input: impl Iterator<Item = &'a <Self::BoolAlg as BoolAlg>::Domain>,
+    possibilities: Vec<Next>,
+    mut step_func: impl FnMut(&Next, &<Self::BoolAlg as BoolAlg>::Domain, &Self::Target) -> Next,
     output_func: impl Fn(Vec<Next>) -> Output,
   ) -> Output
   where
-    Next: ToState<Self::StateType> + Clone + PartialEq,
-    F: FnMut(&Next, &<Self::BoolAlg as BoolAlg>::Domain, &Self::Target) -> Next,
+    Next: ToState<Self::StateType> + PartialEq,
     <Self::BoolAlg as BoolAlg>::Domain: 'a,
   {
-    let mut possibilities = initial_possibilities;
-
-    input.for_each(|c| {
-      let possibilities_ = possibilities.clone();
-      possibilities.clear();
-
-      possibilities_.into_iter().for_each(|curr| {
-        self
-          .transition()
-          .into_iter()
-          .for_each(|((s, phi), target)| {
-            if *s == *curr.to_state() && phi.denote(c) {
-              target.into_iter().for_each(|t| {
-                let next = step_func(&curr, c, t);
-                if !possibilities.contains(&next) {
-                  possibilities.push(next);
-                }
-              });
-            }
-          });
-      });
-    });
-
-    output_func(possibilities)
+    if let Some(c) = input.next() {
+      self.generalized_run(
+        input,
+        self.step(possibilities, |curr, ((s, phi), t)| {
+          (*s == *curr.to_state() && phi.denote(c)).then(|| step_func(&curr, c, t))
+        }),
+        step_func,
+        output_func,
+      )
+    } else {
+      output_func(possibilities)
+    }
   }
 }
 

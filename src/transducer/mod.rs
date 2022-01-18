@@ -80,7 +80,7 @@ pub(crate) mod tests {
       self.generalized_run(
         input.into_iter(),
         vec![(self.initial_state.clone(), initial_map)],
-        &mut |(_, map), c, (q, alpha)| {
+        |(_, map), c, (q, alpha)| {
           let var_map = self
             .variables
             .iter()

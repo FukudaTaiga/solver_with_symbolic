@@ -80,7 +80,7 @@ where
     self.generalized_run(
       input.into_iter(),
       vec![(S::clone(&self.initial_state), initial_map)],
-      &mut |(_, map), c, (q, alpha)| {
+      |(_, map), c, (q, alpha)| {
         let var_map = self
           .variables
           .iter()

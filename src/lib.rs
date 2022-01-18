@@ -39,6 +39,7 @@ pub fn run(input: &str) -> SolverResult {
 
   if smt2.get_model() {
     if let Some(path) = sfa.accepted_path() {
+      eprintln!("{:?}", path);
       SolverResult::Model(smt2.to_model(path))
     } else {
       SolverResult::UNSAT
@@ -119,7 +120,7 @@ mod tests {
       (declare-const x0 String)
       (declare-const x1 String)
       (assert (= x1 (str.reverse x0)))
-      (assert (str.in.re x1 (re.* (str.to.re "ab"))))
+      (assert (str.in.re x1 (str.to.re "ab")))
       (check-sat)
       (get-model)
       "#;
@@ -130,7 +131,6 @@ mod tests {
   }
 
   #[test]
-  #[ignore]
   fn smt2_2_sst_complex() {
     let input = r#"
       (declare-const x0 String)

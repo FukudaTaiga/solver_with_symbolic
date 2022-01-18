@@ -414,6 +414,9 @@ impl<T: Domain> BoolAlg for Predicate<T> {
           Ok(els[0].clone())
         }
       }
+      Predicate::Not(p) => {
+        unimplemented!()
+      }
       _ => unimplemented!()
     }
   }

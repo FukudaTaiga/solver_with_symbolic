@@ -55,7 +55,7 @@ where
     self.generalized_run(
       input.into_iter(),
       vec![(self.initial_state.clone(), vec![])],
-      &mut |(_, w), c, (q, map)| {
+      |(_, w), c, (q, map)| {
         let mut w = w.clone();
         w.extend(map.into_iter().map(|f| D::clone(f.apply(c))));
         (S::clone(q), w)
