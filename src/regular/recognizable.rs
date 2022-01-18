@@ -1,3 +1,3 @@
 pub trait Recognizable<T> {
-  fn recognize(&self, input: Vec<T>) -> bool;
+    fn member(&self, input: &[T]) -> bool;
 }
