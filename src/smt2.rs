@@ -353,7 +353,10 @@ impl<D: Domain, S: State> Smt2<D, S> {
   }
 
   pub fn filter_sl(&self, idx: VarIndex) -> Option<&StraightLineConstraint<D, S>> {
-    self.sl_constraints.iter().find(|sl_cons| sl_cons.idx() == idx)
+    self
+      .sl_constraints
+      .iter()
+      .find(|sl_cons| sl_cons.idx() == idx)
   }
 
   pub fn filter_reg(&mut self, idx: VarIndex) -> Option<Regex<D>> {
@@ -410,7 +413,6 @@ impl<D: Domain, S: State> Smt2<D, S> {
 
     path.into_iter().for_each(|predicate| {
       assert!(idx < self.vars.len());
-      
       if predicate == B::char(B::Domain::separator()) {
         idx += 1;
       } else {
@@ -419,7 +421,10 @@ impl<D: Domain, S: State> Smt2<D, S> {
       }
     });
 
-    result.into_iter().map(|(idx, s)| (self.vars[idx].clone(), s.clone())).collect()
+    result
+      .into_iter()
+      .map(|(idx, s)| (self.vars[idx].clone(), s.clone()))
+      .collect()
   }
 }
 impl<D: Domain, S: State> Iterator for Smt2<D, S> {
@@ -477,9 +482,13 @@ mod tests {
     );
     assert_eq!(None, sl_iter.next());
     let mut re_iter = smt2.reg_constraints().clone().into_iter();
-    let x1 = Regex::Element('a').concat(Regex::Element('b'));
-    let x1 = x1.clone().concat(x1.star());
-    assert_eq!(Some(RegularConstraint(1, x1)), re_iter.next());
+    assert_eq!(
+      Some(RegularConstraint(
+        1,
+        Regex::Element('a').concat(Regex::Element('b')).plus()
+      )),
+      re_iter.next()
+    );
     assert_eq!(
       Some(RegularConstraint(
         2,

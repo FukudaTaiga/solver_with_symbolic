@@ -86,6 +86,18 @@ mod tests {
   }
 
   #[test]
+  fn reg_sfa_plus() {
+    let sfa = Reg::seq("abc").plus().to_sfa::<StateImpl>();
+
+    for i in 0..10 {
+      assert!(run!(sfa, ["abc".repeat(i)]) ^ (i == 0));
+    }
+    for reject in ["abca", "abbc", "aabc", "xyz"] {
+      assert!(!run!(sfa, [reject]));
+    }
+  }
+
+  #[test]
   fn reg_sfa_concat() {
     let sfa = Reg::all()
       .star()

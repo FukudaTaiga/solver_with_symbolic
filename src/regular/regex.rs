@@ -9,7 +9,7 @@ use smt2parser::concrete::{Constant, Term};
 use std::{
   collections::{HashMap, HashSet},
   fmt::Debug,
-  hash::Hash
+  hash::Hash,
 };
 
 pub fn convert<D: Domain>(reg: Regex<D>) -> Regex<char> {
@@ -23,6 +23,7 @@ pub fn convert<D: Domain>(reg: Regex<D>) -> Regex<char> {
     Regex::Or(vec) => Regex::Or(vec.into_iter().map(|r| convert(r)).collect()),
     Regex::Inter(vec) => Regex::Inter(vec.into_iter().map(|r| convert(r)).collect()),
     Regex::Star(reg) => Regex::Star(Box::new(convert(*reg))),
+    Regex::Plus(reg) => Regex::Plus(Box::new(convert(*reg))),
     Regex::Not(reg) => Regex::Not(Box::new(convert(*reg))),
   }
 }
@@ -37,8 +38,9 @@ pub enum Regex<T: PartialOrd> {
   Concat(Vec<Self>),
   Or(Vec<Self>),
   Inter(Vec<Self>),
-  Star(Box<Regex<T>>),
-  Not(Box<Regex<T>>),
+  Star(Box<Self>),
+  Plus(Box<Self>),
+  Not(Box<Self>),
 }
 impl<T: Domain> Regex<T> {
   pub fn empty() -> Self {
@@ -176,7 +178,7 @@ impl<T: Domain> Regex<T> {
   }
 
   pub fn plus(self) -> Self {
-    self.clone().concat(self.star())
+    Regex::Plus(Box::new(self))
   }
 
   pub fn not(self) -> Self {
@@ -210,7 +212,7 @@ impl<T: Domain> Regex<T> {
         { initial, final_state },
         {
           -> initial,
-          (initial, Predicate::top()) -> [final_state]
+          (initial, Predicate::all_char()) -> [final_state]
         },
         { final_state }
       },
@@ -237,8 +239,9 @@ impl<T: Domain> Regex<T> {
         .map(|r| r.to_sfa())
         .reduce(|res, sfa| res.inter(sfa))
         .unwrap_or(Sfa::empty()),
-      Regex::Not(r) => r.to_sfa().not(),
       Regex::Star(r) => r.to_sfa().star(),
+      Regex::Plus(r) => r.to_sfa().plus(),
+      Regex::Not(r) => r.to_sfa().not(),
     }
   }
 
@@ -418,9 +421,13 @@ mod tests {
   fn star() {
     let abc = Reg::seq("abc");
     let star = abc.clone().star();
-    assert_eq!(star, Reg::Star(Box::new(abc.clone())));
+    assert_eq!(star, Reg::Star(Box::new(abc)));
+  }
 
-    let plus = abc.clone().plus();
-    assert_eq!(plus, abc.concat(star));
+  #[test]
+  fn plus() {
+    let abc = Reg::seq("abc");
+    let star = abc.clone().plus();
+    assert_eq!(star, Reg::Plus(Box::new(abc)));
   }
 }

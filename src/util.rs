@@ -43,7 +43,12 @@ impl Domain for CharWrap {
 }
 
 pub(crate) mod extention {
-  use std::{collections::HashMap, default::Default, hash::Hash, iter::Extend};
+  use std::{
+    collections::{HashMap, HashSet},
+    default::Default,
+    hash::Hash,
+    iter::Extend,
+  };
 
   pub(crate) trait MultiMap {
     type Key: Eq + Hash;
@@ -86,6 +91,30 @@ pub(crate) mod extention {
 
     fn safe_insert(&mut self, key: Self::Key, value: Self::Value) {
       assert!(self.insert(key, value).is_none());
+    }
+  }
+
+  pub(crate) trait HashSetExt: std::marker::Sized {
+    /** expensive method */
+    fn subsets(&self) -> Vec<Self>;
+  }
+  impl<V: Clone + Hash + Eq> HashSetExt for HashSet<V> {
+    fn subsets(&self) -> Vec<Self> {
+      use std::convert::TryInto;
+      let mut subsets = vec![];
+
+      for i in 0..2u64.pow(self.len().try_into().unwrap()) {
+        let mut subset = HashSet::new();
+        self.iter().enumerate().for_each(|(idx, v)| {
+          if i & (1 << idx) != 0 {
+            subset.insert(v.clone());
+          }
+        });
+
+        subsets.push(subset);
+      }
+
+      subsets
     }
   }
 }

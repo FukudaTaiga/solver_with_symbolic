@@ -114,8 +114,7 @@ mod tests {
   }
 
   #[test]
-  #[ignore]
-  fn smt2_2_sst_simple() {
+  fn smt2_2_sst_rev() {
     let input = r#"
       (declare-const x0 String)
       (declare-const x1 String)
@@ -131,6 +130,87 @@ mod tests {
   }
 
   #[test]
+  fn smt2_2_sst_replace() {
+    let input = r#"
+      (declare-const x0 String)
+      (declare-const x1 String)
+      (assert (= x1 
+        (str.replaceallre x0 (re.union (str.to.re "a") (str.to.re "k")) "x")
+      ))
+      (assert (str.in.re x1 (str.to.re "x")))
+      (check-sat)
+      (get-model)
+      "#;
+
+    assert_eq!(run(input), SolverResult::SAT);
+
+    unimplemented!()
+  }
+
+  #[test]
+  fn smt2_2_sst_concat() {
+    let input = r#"
+      (declare-const x0 String)
+      (declare-const x1 String)
+      (assert (= x1 
+        (str.++ "abc" x0 "www")
+      ))
+      (assert (str.in.re x1 (str.to.re "x")))
+      (check-sat)
+      (get-model)
+      "#;
+
+    assert_eq!(run(input), SolverResult::UNSAT);
+
+    let input = r#"
+      (declare-const x0 String)
+      (declare-const x1 String)
+      (assert (= x1 
+        (str.++ "abc" x0 "w")
+      ))
+      (assert (str.in.re x1
+        (
+          re.++ (str.to.re "abc") re.nostr (re.+ (str.to.re "w"))
+        )
+      ))
+      (check-sat)
+      "#;
+
+    assert_eq!(run(input), SolverResult::SAT);
+  }
+
+
+  #[test]
+  fn smt2_2_sst_variable() {
+    let input = r#"
+      (declare-const x0 String)
+      (declare-const x1 String)
+      (declare-const x2 String)
+      (assert (= x1 x0))
+      (assert (= x2 x1))
+      (assert (str.in.re x1 (str.to.re "x")))
+      (assert (str.in.re x2 (str.to.re "a")))
+      (check-sat)
+      (get-model)
+      "#;
+
+    assert_eq!(run(input), SolverResult::UNSAT);
+
+    let input = r#"
+      (declare-const x0 String)
+      (declare-const x1 String)
+      (declare-const x2 String)
+      (assert (= x1 (str.reverse x0)))
+      (assert (= x2 (str.++ x1 "a")))
+      (assert (str.in.re x2 (str.to.re "aba")))
+      (check-sat)
+      (get-model)
+      "#;
+
+    assert_eq!(run(input), SolverResult::SAT);
+  }
+
+  #[test]
   fn smt2_2_sst_complex() {
     let input = r#"
       (declare-const x0 String)
@@ -140,12 +220,12 @@ mod tests {
       (assert (= x2
         (str.++ x1
           (str.replaceallre x0
-            (re.union (str.to.re "abc") (str.to.re "kkk")) "xyz"
+            (str.to.re "abc") "xyz"
           ) x1
         )
       ))
       (assert (str.in.re x1 (re.+ (str.to.re "ab"))))
-      (assert (str.in.re x2 (re.* (str.to.re "aa"))))
+      (assert (str.in.re x2 (re.* (str.to.re "xyz"))))
       (check-sat)
       "#;
 

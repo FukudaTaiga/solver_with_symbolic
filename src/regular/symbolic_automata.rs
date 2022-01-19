@@ -46,7 +46,7 @@ where
     /* default regex .* */
     super::macros::sfa! {
       { state },
-      { -> state, (state, B::top()) -> [state] },
+      { -> state, (state, B::all_char()) -> [state] },
       { state }
     }
   }
@@ -111,6 +111,7 @@ where
   pub fn accepted_path(self) -> Option<Vec<B>> {
     let mut result = None;
     let mut paths = vec![(self.initial_state(), vec![])];
+    let mut visited = HashSet::new();
     while let Some((state, path)) = paths.pop() {
       if self.final_states.contains(state) {
         result = Some(path);
@@ -125,12 +126,17 @@ where
             if *p == *state {
               let mut path = path.clone();
               path.push(phi.clone());
-              target.into_iter().map(|q| (q, path.clone())).collect()
+              target
+                .into_iter()
+                .filter_map(|q| (!visited.contains(q)).then(|| (q, path.clone())))
+                .collect()
             } else {
               vec![]
             }
           }),
       );
+
+      visited.insert(state);
     }
 
     result
@@ -323,6 +329,28 @@ where
     Self::new(states, initial_state, final_states, transition)
   }
 
+  pub fn plus(self) -> Self {
+    let Self {
+      states,
+      initial_state,
+      final_states,
+      transition: t,
+    } = self;
+
+    let mut transition = HashMap::new();
+    t.into_iter().for_each(|((state, phi), target)| {
+      if state == initial_state {
+        final_states.iter().for_each(|final_state| {
+          transition.insert_with_check((S::clone(final_state), phi.clone()), target.clone());
+        });
+        transition.insert((S::clone(&initial_state), phi.clone()), target.clone());
+      }
+      transition.insert((state, phi), target);
+    });
+
+    Self::new(states, initial_state, final_states, transition)
+  }
+
   pub fn pre_image<V: Variable>(self, sst: SymSst<D, B, B::Term, S, V>) -> Self {
     eprintln!("preimage");
     let mut states = HashMap::new();
@@ -367,18 +395,7 @@ where
     }
 
     {
-      let to_check: HashSet<_> = self
-        .states
-        .iter()
-        .filter(|s| {
-          reachables
-            .get(s)
-            .unwrap()
-            .iter()
-            .find(|s| self.final_states.contains(s))
-            .is_some()
-        })
-        .collect();
+      let to_check: HashSet<_> = self.states.iter().collect();
 
       for (q, output) in sst.final_set() {
         let mut possibilities = vec![(&self.initial_state, HashMap::new())];
@@ -415,13 +432,18 @@ where
       }
     }
 
-    eprintln!("start searching");
+    eprintln!(
+      "stack {:?}\n\nstart searching, {}, vars: {}",
+      stack,
+      stack.len(),
+      sst.variables().len()
+    );
 
     while let Some(tuple) = stack.pop() {
       #[cfg(test)]
       {
         if states.len() > 200 {
-          eprintln!("states: {:?}", states);
+          //eprintln!("states: {:#?}", states);
           panic!("psedo stack overflow");
         }
       }
