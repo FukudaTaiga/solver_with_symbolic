@@ -1,7 +1,14 @@
 use crate::boolean_algebra::BoolAlg;
-use crate::regular::{regex::Regex, symbolic_automata::Sfa};
+use crate::regular::{
+  regex::{self, Regex as InnerRegex},
+  symbolic_automata::Sfa,
+};
 use crate::state::State;
-use crate::transducer::transducer::Transducer;
+use crate::transducer::sst_factory::SstBuilder;
+use crate::transducer::{
+  term::{OutputComp, VariableImpl},
+  transducer::Transducer,
+};
 use crate::util::Domain;
 use smt2parser::{
   concrete::{Command, Constant, Identifier, QualIdentifier, Sort, Symbol, SyntaxBuilder, Term},
@@ -63,8 +70,8 @@ pub enum TransductionOp<T: Domain, S: State> {
   Var(VarIndex),
   Reverse(VarIndex),
   Str(String),
-  Replace(VarIndex, Regex<T>, ReplaceTarget),
-  ReplaceAll(VarIndex, Regex<T>, ReplaceTarget),
+  Replace(VarIndex, InnerRegex<T>, ReplaceTarget),
+  ReplaceAll(VarIndex, InnerRegex<T>, ReplaceTarget),
   #[allow(dead_code)]
   UserDef(Transducer<T, S>),
 }
@@ -95,7 +102,7 @@ impl<D: Domain, S: State> Transduction<D, S> {
               if let Term::QualIdentifier(qi) = var {
                 Transduction(vec![TransductionOp::ReplaceAll(
                   get_var(qi, vars),
-                  Regex::new(old),
+                  InnerRegex::new(old),
                   ReplaceTarget::from(new, vars),
                 )])
               } else {
@@ -110,7 +117,7 @@ impl<D: Domain, S: State> Transduction<D, S> {
               if let Term::QualIdentifier(qi) = var {
                 Transduction(vec![TransductionOp::Replace(
                   get_var(qi, vars),
-                  Regex::new(old),
+                  InnerRegex::new(old),
                   ReplaceTarget::from(new, vars),
                 )])
               } else {
@@ -137,13 +144,70 @@ impl<D: Domain, S: State> Transduction<D, S> {
       _ => panic!("Syntax error: {:?}", term),
     }
   }
+
+  pub fn apply(&self, var_map: &HashMap<VarIndex, String>) -> String {
+    let mut result = String::new();
+
+    for operator in &self.0 {
+      match operator {
+        TransductionOp::Str(s) => {
+          result.push_str(&s);
+        }
+        TransductionOp::Var(idx) => {
+          result.push_str(var_map.get(&idx).unwrap());
+        }
+        TransductionOp::Reverse(idx) => {
+          result.push_str(&var_map.get(&idx).unwrap().chars().rev().collect::<String>());
+        }
+        TransductionOp::Replace(idx, from, to) => {
+          let to = match to {
+            ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(char::from(c))).collect(),
+            ReplaceTarget::Var(target_id) => var_map
+              .get(&target_id)
+              .unwrap()
+              .chars()
+              .map(|c| OutputComp::A(char::from(c)))
+              .collect(),
+          };
+          let sst =
+            SstBuilder::<char, S, VariableImpl>::replace_reg(regex::convert(from.clone()), to);
+          let chars: Vec<_> = var_map.get(&idx).unwrap().chars().collect();
+          let replaced = sst.run(&chars[..]).get(0).unwrap()[..]
+            .into_iter()
+            .collect::<String>();
+          result.push_str(&replaced);
+        }
+        TransductionOp::ReplaceAll(idx, from, to) => {
+          let to = match to {
+            ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(char::from(c))).collect(),
+            ReplaceTarget::Var(target_id) => var_map
+              .get(&target_id)
+              .unwrap()
+              .chars()
+              .map(|c| OutputComp::A(char::from(c)))
+              .collect(),
+          };
+          let sst =
+            SstBuilder::<char, S, VariableImpl>::replace_all_reg(regex::convert(from.clone()), to);
+          let chars: Vec<_> = var_map.get(&idx).unwrap().chars().collect();
+          let replaced = sst.run(&chars[..]).get(0).unwrap()[..]
+            .into_iter()
+            .collect::<String>();
+          result.push_str(&replaced);
+        }
+        TransductionOp::UserDef(_) => unimplemented!(),
+      }
+    }
+
+    result
+  }
 }
 
 pub trait Constraint {
   type Value;
 
   fn idx(&self) -> VarIndex;
-  fn constraint(self) -> Self::Value;
+  fn constraint(&self) -> &Self::Value;
 }
 #[derive(Debug, PartialEq, Clone)]
 pub struct StraightLineConstraint<D: Domain, S: State>(VarIndex, Transduction<D, S>);
@@ -153,20 +217,20 @@ impl<D: Domain, S: State> Constraint for StraightLineConstraint<D, S> {
   fn idx(&self) -> VarIndex {
     self.0
   }
-  fn constraint(self) -> Self::Value {
-    self.1
+  fn constraint(&self) -> &Self::Value {
+    &self.1
   }
 }
 #[derive(Debug, PartialEq, Clone)]
-pub struct RegularConstraint<D: Domain>(VarIndex, Regex<D>);
+pub struct RegularConstraint<D: Domain>(VarIndex, InnerRegex<D>);
 impl<D: Domain> Constraint for RegularConstraint<D> {
-  type Value = Regex<D>;
+  type Value = InnerRegex<D>;
 
   fn idx(&self) -> VarIndex {
     self.0
   }
-  fn constraint(self) -> Self::Value {
-    self.1
+  fn constraint(&self) -> &Self::Value {
+    &self.1
   }
 }
 #[derive(Debug, PartialEq, Clone)]
@@ -177,8 +241,8 @@ impl Constraint for IntLinearConstraint {
   fn idx(&self) -> VarIndex {
     self.0
   }
-  fn constraint(self) -> Self::Value {
-    self.1
+  fn constraint(&self) -> &Self::Value {
+    &self.1
   }
 }
 
@@ -317,9 +381,10 @@ impl<D: Domain, S: State> Smt2<D, S> {
           "str.in.re" => {
             if let [qi, reg] = &arguments[..] {
               if let Term::QualIdentifier(qi) = qi {
-                self
-                  .reg_constraints
-                  .push(RegularConstraint(get_var(qi, &self.vars), Regex::new(reg)))
+                self.reg_constraints.push(RegularConstraint(
+                  get_var(qi, &self.vars),
+                  InnerRegex::new(reg),
+                ))
               } else {
                 panic!("Syntax error")
               }
@@ -359,15 +424,15 @@ impl<D: Domain, S: State> Smt2<D, S> {
       .find(|sl_cons| sl_cons.idx() == idx)
   }
 
-  pub fn filter_reg(&mut self, idx: VarIndex) -> Option<Regex<D>> {
-    let mut result: Option<Regex<D>> = None;
+  pub fn filter_reg(&mut self, idx: VarIndex) -> Option<InnerRegex<D>> {
+    let mut result: Option<InnerRegex<D>> = None;
 
     while let Some(i) = self
       .reg_constraints
       .iter()
       .position(|reg_cons| reg_cons.idx() == idx)
     {
-      let regex = self.reg_constraints.swap_remove(i).constraint();
+      let regex = self.reg_constraints.swap_remove(i).1;
       result = Some(match result {
         Some(result) => result.inter(regex),
         None => regex,
@@ -406,8 +471,6 @@ impl<D: Domain, S: State> Smt2<D, S> {
   }
 
   pub fn to_model<B: BoolAlg>(&self, path: Vec<B>) -> HashMap<String, String> {
-    use crate::transducer::sst_factory::SstBuilder;
-    use crate::transducer::term::{OutputComp, VariableImpl};
     let mut result = HashMap::new();
     let mut idx = 0usize;
 
@@ -421,17 +484,15 @@ impl<D: Domain, S: State> Smt2<D, S> {
       }
     });
 
+    while idx < self.vars.len() {
+      result.insert(idx, self.filter_sl(idx).unwrap().1.apply(&result));
+      idx += 1;
+    }
+
     result
       .into_iter()
       .map(|(idx, s)| (self.vars[idx].clone(), s.clone()))
       .collect()
-  }
-}
-impl<D: Domain, S: State> Iterator for Smt2<D, S> {
-  type Item = StraightLineConstraint<D, S>;
-
-  fn next(&mut self) -> Option<Self::Item> {
-    self.sl_constraints.pop()
   }
 }
 
@@ -485,14 +546,18 @@ mod tests {
     assert_eq!(
       Some(RegularConstraint(
         1,
-        Regex::Element('a').concat(Regex::Element('b')).plus()
+        InnerRegex::Element('a')
+          .concat(InnerRegex::Element('b'))
+          .plus()
       )),
       re_iter.next()
     );
     assert_eq!(
       Some(RegularConstraint(
         2,
-        Regex::Element('a').concat(Regex::Element('a')).star()
+        InnerRegex::Element('a')
+          .concat(InnerRegex::Element('a'))
+          .star()
       )),
       re_iter.next()
     );

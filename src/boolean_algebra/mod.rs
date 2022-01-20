@@ -1,6 +1,7 @@
 use crate::transducer::term::{FunctionTerm, Lambda};
 use crate::util::Domain;
 use std::{
+  collections::BTreeSet,
   fmt::{self, Debug},
   hash::Hash,
 };
@@ -63,7 +64,7 @@ pub trait BoolAlg: Debug + Eq + Hash + Clone {
 
   fn satisfiable(&self) -> bool;
 
-  fn get_one(&self) -> Result<Self::GetOne, NoElement>;
+  fn get_one(self) -> Result<Self::GetOne, NoElement>;
 }
 /** Boolean Algebra with epsilon */
 // impl<B: BoolAlg> BoolAlg for Option<B> {
@@ -307,11 +308,7 @@ impl<T: Domain> BoolAlg for Predicate<T> {
         Predicate::in_set(els1.into_iter().chain(els2.into_iter()).cloned())
       }
       (Predicate::InSet(els), p) | (p, Predicate::InSet(els)) => {
-        let els_: Vec<_> = els
-          .into_iter()
-          .filter(|e| !p.denote(*e))
-          .cloned()
-          .collect();
+        let els_: Vec<_> = els.into_iter().filter(|e| !p.denote(*e)).cloned().collect();
         if els_.len() == 0 {
           p.clone()
         } else {
@@ -385,39 +382,119 @@ impl<T: Domain> BoolAlg for Predicate<T> {
   }
 
   // use z3?...
-  fn get_one(&self) -> Result<Self::GetOne, NoElement> {
-    match self {
+  fn get_one(self) -> Result<Self::GetOne, NoElement> {
+    let condition: SatisfiableSet<T> = self.into();
+
+    if !condition.satisfiable {
+      Err(NoElement)
+    } else if condition.included.is_empty() {
+      (b'a'..SatisfiableSet::<T>::maximum())
+        .into_iter()
+        .find_map(|i| {
+          let d = (i as char).into();
+          (!condition.excluded.contains(&d)).then(|| d)
+        })
+        .ok_or(NoElement)
+    } else {
+      let SatisfiableSet {
+        included, excluded, ..
+      } = condition;
+
+      included
+        .into_iter()
+        .find_map(|d| (!excluded.contains(&d)).then(|| d))
+        .ok_or(NoElement)
+    }
+  }
+}
+
+struct SatisfiableSet<D: Domain> {
+  included: BTreeSet<D>,
+  excluded: BTreeSet<D>,
+  satisfiable: bool,
+}
+impl<D: Domain> SatisfiableSet<D> {
+  fn maximum() -> u8 {
+    u8::MAX
+  }
+}
+impl<D: Domain> Default for SatisfiableSet<D> {
+  fn default() -> Self {
+    Self {
+      included: BTreeSet::new(),
+      excluded: BTreeSet::new(),
+      satisfiable: true,
+    }
+  }
+}
+impl<D: Domain> From<Predicate<D>> for SatisfiableSet<D> {
+  fn from(p: Predicate<D>) -> Self {
+    use std::iter::FromIterator;
+
+    match p {
       Predicate::Bool(b) => {
-        if *b {
-          Ok(char::default().into())
+        if b {
+          Self {
+            included: BTreeSet::from([char::default().into()]),
+            ..Default::default()
+          }
         } else {
-          Err(NoElement)
-        }
-      }
-      Predicate::Eq(e) => Ok(e.clone()),
-      Predicate::Range { left, right } => {
-        if left.is_some() {
-          Ok(left.as_ref().unwrap().clone())
-        } else {
-          let r: u8 = right.as_ref().unwrap().clone().into() as u8;
-          if r != 0 {
-            Ok(T::from((r - 1) as char))
-          } else {
-            Err(NoElement)
+          Self {
+            satisfiable: false,
+            ..Default::default()
           }
         }
       }
+      Predicate::Eq(e) => Self {
+        included: BTreeSet::from([e.clone()]),
+        ..Default::default()
+      },
+      Predicate::Range { left, right } => Self {
+        included: BTreeSet::from_iter(
+          (left.map(|d| d.into() as u8).unwrap_or(0)
+            ..right.map(|d| d.into() as u8).unwrap_or(Self::maximum()))
+            .into_iter()
+            .map(|i| (i as char).into()),
+        ),
+        ..Default::default()
+      },
       Predicate::InSet(els) => {
         if els.len() == 0 {
-          Err(NoElement)
+          Self {
+            satisfiable: false,
+            ..Default::default()
+          }
         } else {
-          Ok(els[0].clone())
+          Self {
+            included: BTreeSet::from_iter(els),
+            ..Default::default()
+          }
         }
       }
-      Predicate::Not(p) => {
-        unimplemented!()
+      Predicate::And(p1, p2) => {
+        let p1: Self = (*p1).into();
+        let p2: Self = (*p2).into();
+
+        Self {
+          included: p1.included.intersection(&p2.included).cloned().collect(),
+          excluded: p1.excluded.union(&p2.excluded).cloned().collect(),
+          satisfiable: p1.satisfiable && p2.satisfiable,
+        }
       }
-      _ => unimplemented!()
+      Predicate::Or(p1, p2) => p1.not().and(&p2.not()).not().into(),
+      Predicate::Not(p) => {
+        let p: Self = (*p).into();
+
+        if p.satisfiable {
+          Self {
+            excluded: p.included.difference(&p.excluded).cloned().collect(),
+            ..Default::default()
+          }
+        } else {
+          p
+        }
+      }
+      Predicate::WithLambda { p: _, f: _ } => unimplemented!(),
     }
   }
 }

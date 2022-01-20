@@ -626,7 +626,7 @@ where
     let mut transition: HashMap<_, Vec<_>> = HashMap::new();
     let mut final_states = HashSet::new();
 
-    let reachables: HashMap<_, _> = self
+    let reachable_sources: HashMap<_, _> = self
       .states()
       .into_iter()
       .map(|s| (s, self.reachable_sources(s)))
@@ -643,7 +643,7 @@ where
         $possibilities
           .into_iter()
           .flat_map(|($curr, $var_map, $($others),*)| {
-            let sources = reachables.get(&$curr).unwrap();
+            let sources = reachable_sources.get(&$curr).unwrap();
 
             sources.into_iter().filter_map(|source| {
               $to_check.contains(source).then(|| {
@@ -711,7 +711,7 @@ where
     while let Some(tuple) = stack.pop() {
       #[cfg(test)]
       {
-        if states.len() > 1000 {
+        if states.len() > 5000 {
           eprintln!("states: {:#?}", states);
           panic!("psedo stack overflow");
         }
@@ -727,7 +727,7 @@ where
 
           for (var, nexts) in &var_map {
             for (p1, p2) in nexts {
-              let to_check = reachables.get(p2).unwrap();
+              let to_check = reachable_sources.get(p2).unwrap();
               let mut possibilities = vec![(*p2, BTreeMap::new(), B::top())];
 
               if let Some(seq) = alpha.get(*var) {
@@ -1088,7 +1088,7 @@ mod tests {
       fn satisfiable(&self) -> bool {
         self.0 != Regex::empty()
       }
-      fn get_one(&self) -> Result<Self::Domain, crate::boolean_algebra::NoElement> {
+      fn get_one(self) -> Result<Self::Domain, crate::boolean_algebra::NoElement> {
         unimplemented!()
       }
     }

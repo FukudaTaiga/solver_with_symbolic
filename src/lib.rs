@@ -5,16 +5,16 @@ mod state;
 pub mod transducer;
 mod util;
 
-use boolean_algebra::Predicate;
 use smt2::{Constraint, Smt2};
 use state::{StateImpl, StateMachine};
+use std::collections::HashMap;
 use transducer::{sst_factory::SstBuilder, term::VariableImpl};
-use util::{CharWrap, Domain};
+use util::CharWrap;
 
 #[derive(Debug, PartialEq)]
 pub enum SolverResult {
   SAT,
-  Model(std::collections::HashMap<String, String>),
+  Model(HashMap<String, String>),
   UNSAT,
 }
 
@@ -26,7 +26,7 @@ pub fn run(input: &str) -> SolverResult {
 
   let builder: SstBuilder<CharWrap, StateImpl, VariableImpl> = SstBuilder::init();
 
-  while let Some(sl_cons) = smt2.next() {
+  for sl_cons in smt2.sl_constraints().into_iter().rev() {
     eprintln!("sfa: {:?}", sfa);
     eprintln!("sl_cons: {:?}", sl_cons);
     let sst = builder.generate(sl_cons.idx(), sl_cons.constraint());
@@ -113,6 +113,14 @@ mod tests {
     pub(crate) use run;
   }
 
+  macro_rules! model {
+    ( $($var:expr => $result:expr),* $(,)? ) => {
+      SolverResult::Model(HashMap::from([$(
+        ($var.to_owned(), $result.to_owned())
+      ),*]))
+    };
+  }
+
   #[test]
   fn smt2_2_sst_rev() {
     let input = r#"
@@ -124,9 +132,7 @@ mod tests {
       (get-model)
       "#;
 
-    assert_eq!(run(input), SolverResult::SAT);
-
-    unimplemented!()
+    assert_eq!(run(input), model!["x0" => "ba","x1" => "ab"]);
   }
 
   #[test]
@@ -142,9 +148,12 @@ mod tests {
       (get-model)
       "#;
 
-    assert_eq!(run(input), SolverResult::SAT);
-
-    unimplemented!()
+    let model = run(input);
+    assert!(
+      model == model!["x0" => "a", "x1" => "x"]
+        || model == model!["x0" => "k", "x1" => "x"]
+        || model == model!["x0" => "x", "x1" => "x"]
+    );
   }
 
   #[test]
@@ -170,15 +179,26 @@ mod tests {
       ))
       (assert (str.in.re x1
         (
-          re.++ (str.to.re "abc") re.nostr (re.+ (str.to.re "w"))
+          re.++ (str.to.re "abc") re.allchar (re.+ (str.to.re "w"))
         )
       ))
       (check-sat)
+      (get-model)
       "#;
 
-    assert_eq!(run(input), SolverResult::SAT);
+    assert!({
+      let mut result = false;
+      let model = run(input);
+      for i in 0..=5 {
+        let x0 = format!("a{}", "w".repeat(i));
+        if model == model!["x0" => x0, "x1" => format!("{}{}{}", "abc", x0, "w")] {
+          result = true;
+          break;
+        }
+      }
+      result
+    });
   }
-
 
   #[test]
   fn smt2_2_sst_variable() {
@@ -207,7 +227,10 @@ mod tests {
       (get-model)
       "#;
 
-    assert_eq!(run(input), SolverResult::SAT);
+    assert_eq!(
+      run(input),
+      model!["x0" => "ba", "x1" => "ab", "x2" => "aba"]
+    );
   }
 
   #[test]
@@ -227,10 +250,9 @@ mod tests {
       (assert (str.in.re x1 (re.+ (str.to.re "ab"))))
       (assert (str.in.re x2 (re.* (str.to.re "xyz"))))
       (check-sat)
+      (get-model)
       "#;
 
     assert_eq!(run(input), SolverResult::UNSAT);
-
-    unimplemented!()
   }
 }
