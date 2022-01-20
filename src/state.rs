@@ -225,37 +225,39 @@ pub trait StateMachine: Sized {
     reachables
   }
 
-  fn back<Next>(
-    &self,
-    possibilities: Vec<Next>,
-    mut filter_map: impl FnMut(&Next, &(Self::StateType, Self::BoolAlg)) -> Option<Next>,
-  ) -> Vec<Next>
+  fn back<'a, Pre>(
+    &'a self,
+    possibilities: Vec<Pre>,
+    mut with: impl FnMut(&Pre, (&'a (Self::StateType, Self::BoolAlg), &'a Self::Target)) -> Option<Pre>,
+    mut guard: impl FnMut(&'a (Self::StateType, Self::BoolAlg)) -> bool,
+  ) -> Vec<Pre>
   where
-    Next: ToState<Self::StateType>,
+    Pre: PartialEq,
   {
-    possibilities
-      .into_iter()
-      .flat_map(|curr| {
-        self
-          .transition()
-          .iter()
-          .filter_map(|(source, target)| {
-            target
-              .into_iter()
-              .find(|t| *t.to_state() == *curr.to_state())
-              .is_some()
-              .then(|| filter_map(&curr, source))
-              .flatten()
-          })
-          .collect::<Vec<_>>()
-      })
-      .collect()
+    let mut possibilities_ = vec![];
+
+    possibilities.into_iter().for_each(|curr| {
+      'transition: for (source, target) in self.transition() {
+        if guard(source) {
+          for t in target {
+            if let Some(pre) = with(&curr, (source, t)) {
+              if !possibilities_.contains(&pre) {
+                possibilities_.push(pre);
+              }
+              continue 'transition;
+            }
+          }
+        }
+      }
+    });
+
+    possibilities_
   }
 
   fn step<'a, Next>(
     &'a self,
     possibilities: Vec<Next>,
-    mut filter_map: impl FnMut(
+    mut with: impl FnMut(
       &Next,
       (&'a (Self::StateType, Self::BoolAlg), &'a Self::Target),
     ) -> Option<Next>,
@@ -268,7 +270,7 @@ pub trait StateMachine: Sized {
     possibilities.into_iter().for_each(|curr| {
       self.transition().into_iter().for_each(|(source, target)| {
         target.into_iter().for_each(|t| {
-          if let Some(next) = filter_map(&curr, (source, t)) {
+          if let Some(next) = with(&curr, (source, t)) {
             if !possibilities_.contains(&next) {
               possibilities_.push(next);
             }

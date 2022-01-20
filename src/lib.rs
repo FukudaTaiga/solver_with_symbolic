@@ -229,7 +229,7 @@ mod tests {
       (check-sat)
       "#;
 
-    assert_eq!(run(input), SolverResult::SAT);
+    assert_eq!(run(input), SolverResult::UNSAT);
 
     unimplemented!()
   }

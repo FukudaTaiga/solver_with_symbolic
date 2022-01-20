@@ -44,7 +44,7 @@ impl Domain for CharWrap {
 
 pub(crate) mod extention {
   use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     default::Default,
     hash::Hash,
     iter::Extend,
@@ -61,6 +61,26 @@ pub(crate) mod extention {
   impl<K, V, Collection> MultiMap for HashMap<K, Collection>
   where
     K: Eq + Hash,
+    Collection: IntoIterator<Item = V> + Extend<V> + Default,
+  {
+    type Key = K;
+    type Value = V;
+
+    fn insert_with_check(&mut self, key: Self::Key, values: impl IntoIterator<Item = Self::Value>) {
+      let vec = self.entry(key).or_default();
+      vec.extend(values);
+    }
+
+    fn merge(&mut self, other: Self) {
+      for (key, values_) in other.into_iter() {
+        let values = self.entry(key).or_default();
+        values.extend(values_);
+      }
+    }
+  }
+  impl<K, V, Collection> MultiMap for BTreeMap<K, Collection>
+  where
+    K: Eq + Hash + Ord,
     Collection: IntoIterator<Item = V> + Extend<V> + Default,
   {
     type Key = K;
