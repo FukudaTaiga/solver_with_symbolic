@@ -5,11 +5,10 @@ mod state;
 pub mod transducer;
 mod util;
 
-use boolean_algebra::Predicate;
 use smt2::{Constraint, Smt2};
 use state::{StateImpl, StateMachine};
 use transducer::{sst_factory::SstBuilder, term::VariableImpl};
-use util::{CharWrap, Domain};
+use util::CharWrap;
 
 #[derive(Debug, PartialEq)]
 pub enum SolverResult {
@@ -26,7 +25,7 @@ pub fn run(input: &str) -> SolverResult {
 
   let builder: SstBuilder<CharWrap, StateImpl, VariableImpl> = SstBuilder::init();
 
-  while let Some(sl_cons) = smt2.next() {
+  for sl_cons in smt2.sl_constraints() {
     eprintln!("sfa: {:?}", sfa);
     eprintln!("sl_cons: {:?}", sl_cons);
     let sst = builder.generate(sl_cons.idx(), sl_cons.constraint());
@@ -170,15 +169,15 @@ mod tests {
       ))
       (assert (str.in.re x1
         (
-          re.++ (str.to.re "abc") re.nostr (re.+ (str.to.re "w"))
+          re.++ (str.to.re "abc") re.allchar (re.+ (str.to.re "w"))
         )
       ))
       (check-sat)
+      (get-model)
       "#;
 
     assert_eq!(run(input), SolverResult::SAT);
   }
-
 
   #[test]
   fn smt2_2_sst_variable() {
@@ -227,6 +226,7 @@ mod tests {
       (assert (str.in.re x1 (re.+ (str.to.re "ab"))))
       (assert (str.in.re x2 (re.* (str.to.re "xyz"))))
       (check-sat)
+      (get-model)
       "#;
 
     assert_eq!(run(input), SolverResult::UNSAT);

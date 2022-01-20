@@ -254,15 +254,15 @@ pub(crate) mod tests {
     let builder = Builder::init();
 
     let cons = Transduction(vec![TransductionOp::Str("abc".to_owned())]);
-    let sst = builder.generate(1, cons);
+    let sst = builder.generate(1, &cons);
     assertion!(sst, ["prefix"], 1 + 0, to_charwrap(["prefix", "abc"]));
 
     let cons = Transduction(vec![TransductionOp::Var(0)]);
-    let sst = builder.generate(1, cons);
+    let sst = builder.generate(1, &cons);
     assertion!(sst, ["prefix"], 1 + 1, to_charwrap(["prefix", "prefix"]));
 
     let cons = Transduction(vec![TransductionOp::Reverse(0)]);
-    let sst = builder.generate(1, cons);
+    let sst = builder.generate(1, &cons);
     assertion!(sst, ["prefix"], 1 + 1, to_charwrap(["prefix", "xiferp"]));
 
     let cons = Transduction(vec![TransductionOp::Replace(
@@ -270,7 +270,7 @@ pub(crate) mod tests {
       Regex::seq("p"),
       ReplaceTarget::Str("r".to_owned()),
     )]);
-    let sst = builder.generate(1, cons);
+    let sst = builder.generate(1, &cons);
     assertion! {
       sst,
       ["prefix,prefix"],
@@ -283,7 +283,7 @@ pub(crate) mod tests {
       Regex::seq("0"),
       ReplaceTarget::Var(0),
     )]);
-    let sst = builder.generate(2, cons);
+    let sst = builder.generate(2, &cons);
     assertion! {
       sst,
       ["prefix", "0one0"],
@@ -296,7 +296,7 @@ pub(crate) mod tests {
       Regex::seq("p"),
       ReplaceTarget::Str("r".to_owned()),
     )]);
-    let sst = builder.generate(1, cons);
+    let sst = builder.generate(1, &cons);
     assertion! {
       sst,
       ["prefix,prefix"],
@@ -309,7 +309,7 @@ pub(crate) mod tests {
       Regex::seq("0"),
       ReplaceTarget::Var(0),
     )]);
-    let sst = builder.generate(2, cons);
+    let sst = builder.generate(2, &cons);
     assertion! {
       sst,
       ["prefix", "0one0"],
@@ -322,7 +322,7 @@ pub(crate) mod tests {
       TransductionOp::Var(1),
       TransductionOp::Var(0),
     ]);
-    let sst = builder.generate(2, cons);
+    let sst = builder.generate(2, &cons);
     assertion! {
       sst,
       ["one", "two"],
@@ -337,7 +337,7 @@ pub(crate) mod tests {
     let builder = Builder::init();
 
     let cons = Transduction(vec![TransductionOp::Var(0), TransductionOp::Reverse(0)]);
-    let sst = builder.generate(1, cons);
+    let sst = builder.generate(1, &cons);
     assertion! {
       sst,
       ["abc"],
@@ -350,7 +350,7 @@ pub(crate) mod tests {
       TransductionOp::Var(0),
       TransductionOp::ReplaceAll(1, Regex::seq("abc"), ReplaceTarget::Str("xyz".to_owned())),
     ]);
-    let sst = builder.generate(2, cons);
+    let sst = builder.generate(2, &cons);
     assertion! {
       sst,
       ["kkk", "wwwabcababcxyz"],
@@ -364,7 +364,7 @@ pub(crate) mod tests {
       TransductionOp::ReplaceAll(2, Regex::seq("abc"), ReplaceTarget::Str("xyz".to_owned())),
       TransductionOp::Reverse(1),
     ]);
-    let sst = builder.generate(3, cons);
+    let sst = builder.generate(3, &cons);
     assertion! {
       sst,
       ["https", "http", "wwwabcababcxyz"],
@@ -380,7 +380,7 @@ pub(crate) mod tests {
       TransductionOp::ReplaceAll(3, Regex::seq("e"), ReplaceTarget::Var(2)),
       TransductionOp::Reverse(0),
     ]);
-    let sst = builder.generate(4, cons);
+    let sst = builder.generate(4, &cons);
     let mut prefixes = vec![
       "0zero".to_owned(),
       "1one".to_owned(),
