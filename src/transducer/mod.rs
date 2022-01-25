@@ -13,7 +13,7 @@ pub(crate) fn to_update<
   output.into_iter().map(|out| out.clone().into()).collect()
 }
 
-mod macros {
+pub(crate) mod macros {
   macro_rules! make_update {
     ( $( $var:ident -> $seq:expr ),* ) => {
       HashMap::from([

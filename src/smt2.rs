@@ -1,6 +1,6 @@
 use crate::boolean_algebra::BoolAlg;
 use crate::regular::{
-  regex::{self, Regex as InnerRegex},
+  regex::{self, Regex},
   symbolic_automata::Sfa,
 };
 use crate::state::State;
@@ -70,8 +70,8 @@ pub enum TransductionOp<T: Domain, S: State> {
   Var(VarIndex),
   Reverse(VarIndex),
   Str(String),
-  Replace(VarIndex, InnerRegex<T>, ReplaceTarget),
-  ReplaceAll(VarIndex, InnerRegex<T>, ReplaceTarget),
+  Replace(VarIndex, Regex<T>, ReplaceTarget),
+  ReplaceAll(VarIndex, Regex<T>, ReplaceTarget),
   #[allow(dead_code)]
   UserDef(Transducer<T, S>),
 }
@@ -102,7 +102,7 @@ impl<D: Domain, S: State> Transduction<D, S> {
               if let Term::QualIdentifier(qi) = var {
                 Transduction(vec![TransductionOp::ReplaceAll(
                   get_var(qi, vars),
-                  InnerRegex::new(old),
+                  Regex::new(old),
                   ReplaceTarget::from(new, vars),
                 )])
               } else {
@@ -117,7 +117,7 @@ impl<D: Domain, S: State> Transduction<D, S> {
               if let Term::QualIdentifier(qi) = var {
                 Transduction(vec![TransductionOp::Replace(
                   get_var(qi, vars),
-                  InnerRegex::new(old),
+                  Regex::new(old),
                   ReplaceTarget::from(new, vars),
                 )])
               } else {
@@ -222,9 +222,9 @@ impl<D: Domain, S: State> Constraint for StraightLineConstraint<D, S> {
   }
 }
 #[derive(Debug, PartialEq, Clone)]
-pub struct RegularConstraint<D: Domain>(VarIndex, InnerRegex<D>);
+pub struct RegularConstraint<D: Domain>(VarIndex, Regex<D>);
 impl<D: Domain> Constraint for RegularConstraint<D> {
-  type Value = InnerRegex<D>;
+  type Value = Regex<D>;
 
   fn idx(&self) -> VarIndex {
     self.0
@@ -246,7 +246,7 @@ impl Constraint for IntLinearConstraint {
   }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SMTOption {
   check_sat: bool,
   get_model: bool,
@@ -262,7 +262,7 @@ impl Default for SMTOption {
   }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub enum Logic {
   QuantifierFreeString,
 }
@@ -286,7 +286,7 @@ pub enum SolverResult<B: BoolAlg> {
   UNSAT,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Smt2<D: Domain, S: State> {
   sl_constraints: Vec<StraightLineConstraint<D, S>>,
   reg_constraints: Vec<RegularConstraint<D>>,
@@ -381,10 +381,9 @@ impl<D: Domain, S: State> Smt2<D, S> {
           "str.in.re" => {
             if let [qi, reg] = &arguments[..] {
               if let Term::QualIdentifier(qi) = qi {
-                self.reg_constraints.push(RegularConstraint(
-                  get_var(qi, &self.vars),
-                  InnerRegex::new(reg),
-                ))
+                self
+                  .reg_constraints
+                  .push(RegularConstraint(get_var(qi, &self.vars), Regex::new(reg)))
               } else {
                 panic!("Syntax error")
               }
@@ -424,8 +423,8 @@ impl<D: Domain, S: State> Smt2<D, S> {
       .find(|sl_cons| sl_cons.idx() == idx)
   }
 
-  pub fn filter_reg(&mut self, idx: VarIndex) -> Option<InnerRegex<D>> {
-    let mut result: Option<InnerRegex<D>> = None;
+  pub fn filter_reg(&mut self, idx: VarIndex) -> Option<Regex<D>> {
+    let mut result: Option<Regex<D>> = None;
 
     while let Some(i) = self
       .reg_constraints
@@ -476,10 +475,11 @@ impl<D: Domain, S: State> Smt2<D, S> {
 
     path.into_iter().for_each(|predicate| {
       assert!(idx < self.vars.len());
+      let s = result.entry(idx).or_insert(String::new());
+
       if predicate == B::char(B::Domain::separator()) {
         idx += 1;
       } else {
-        let s = result.entry(idx).or_insert(String::new());
         s.push(predicate.get_one().unwrap().into());
       }
     });
@@ -546,18 +546,14 @@ mod tests {
     assert_eq!(
       Some(RegularConstraint(
         1,
-        InnerRegex::Element('a')
-          .concat(InnerRegex::Element('b'))
-          .plus()
+        Regex::Element('a').concat(Regex::Element('b')).plus()
       )),
       re_iter.next()
     );
     assert_eq!(
       Some(RegularConstraint(
         2,
-        InnerRegex::Element('a')
-          .concat(InnerRegex::Element('a'))
-          .star()
+        Regex::Element('a').concat(Regex::Element('a')).star()
       )),
       re_iter.next()
     );

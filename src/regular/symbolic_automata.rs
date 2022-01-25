@@ -591,7 +591,12 @@ where
       }
     }
 
-    eprintln!("finish searching");
+    #[cfg(test)]
+    {
+      eprintln!("finish searching");
+      eprintln!("states map:\n{:#?}", states);
+      eprintln!("transition:\n{:#?}", transition);
+    }
 
     let mut states: HashSet<_> = states.into_values().collect();
     let initial_state = S::new();
@@ -620,7 +625,9 @@ where
   }
 
   pub fn pre_image<V: Variable>(self, sst: SymSst<D, B, B::Term, S, V>) -> Self {
+    #[cfg(test)]
     eprintln!("preimage");
+
     let mut states = HashMap::new();
     let mut initial_states = HashSet::new();
     let mut transition: HashMap<_, Vec<_>> = HashMap::new();
@@ -701,12 +708,14 @@ where
       }
     }
 
-    eprintln!(
-      "stack {:?}\n\nstart searching, {}, vars: {}",
-      stack,
-      stack.len(),
-      sst.variables().len()
-    );
+    #[cfg(test)]
+    {
+      eprintln!(
+        "start searching.\nstack_len: {}, vars_len: {}",
+        stack.len(),
+        sst.variables().len()
+      );
+    }
 
     while let Some(tuple) = stack.pop() {
       #[cfg(test)]
@@ -841,7 +850,12 @@ where
       }
     }
 
-    eprintln!("finish searching");
+    #[cfg(test)]
+    {
+      eprintln!("finish searching");
+      eprintln!("states map:\n{:#?}", states);
+      eprintln!("transition:\n{:#?}", transition);
+    }
 
     let mut states: HashSet<_> = states.into_values().collect();
     let initial_state = S::new();
@@ -870,13 +884,28 @@ where
   }
 
   pub fn chain(self, other: Self) -> Self {
-    self
-      .concat(super::macros::sfa! {
-        { dead, joint },
-        { -> dead, (dead, B::char(D::separator())) -> [joint] },
-        { joint }
-      })
-      .concat(other)
+    let Self {
+      mut states,
+      initial_state,
+      final_states: joint_out,
+      mut transition,
+    } = self;
+
+    let Self {
+      states: states_,
+      initial_state: joint_in,
+      final_states,
+      transition: transition_,
+    } = other;
+
+    states.extend(states_);
+    transition.extend(transition_);
+
+    for joint in joint_out {
+      transition.insert_with_check((joint, B::separator()), [S::clone(&joint_in)]);
+    }
+
+    Self::new(states, initial_state, final_states, transition)
   }
 
   pub fn finish(self) -> Self {
@@ -1511,6 +1540,8 @@ mod tests {
       CharWrap::Char('u'),
       CharWrap::Char('f')
     ]));
+    assert!(!sfa.run(&vec![CharWrap::Separator,]));
+    assert!(!sfa.run(&vec![CharWrap::Separator, CharWrap::Separator,]));
     assert!(!sfa.run(&vec![
       CharWrap::Char('p'),
       CharWrap::Char('r'),
@@ -1524,5 +1555,55 @@ mod tests {
       CharWrap::Char('u'),
       CharWrap::Char('f')
     ]));
+  }
+
+  #[test]
+  fn thesis_demo() {
+    use crate::boolean_algebra::*;
+    use crate::transducer::{
+      macros,
+      term::{FunctionTerm, Lambda, VariableImpl},
+    };
+    type S = StateImpl;
+    type V = VariableImpl;
+    type P = Predicate<char>;
+    type L = Lambda<P>;
+    let (x, y) = (VariableImpl::new(), VariableImpl::new());
+    let sst = macros::sst! {
+      {p},
+      HashSet::from([x, y]),
+      {
+        -> p,
+        (p, P::top()) -> [(p, macros::make_update! [
+          x -> vec![UpdateComp::X(x.clone()), UpdateComp::F(L::identity())],
+          y -> vec![UpdateComp::F(L::identity()), UpdateComp::X(y.clone())]
+        ])]
+      },
+      {
+        p -> vec![OutputComp::X(y.clone()), OutputComp::X(x.clone())]
+      }
+    };
+    let sfa = super::super::macros::sfa! {
+      { s1, s2, s3 },
+      {
+        -> s1,
+        (s1, P::char('a')) -> [s2],
+        (s1, P::char('a').not()) -> [s3],
+        (s2, P::top()) -> [s2],
+        (s3, P::top()) -> [s3]
+      },
+      { s2 }
+    };
+
+    eprintln!("sfa {:?}", sfa);
+    eprintln!("sst {:?}", sst);
+    let pre_image = sfa.pre_image(sst);
+    eprintln!("preimage\n{:#?}", pre_image);
+    assert!(pre_image.run(&"abca".chars().collect::<Vec<_>>()));
+    assert!(pre_image.run(&"a".chars().collect::<Vec<_>>()));
+    assert!(pre_image.run(&"zzzza".chars().collect::<Vec<_>>()));
+    assert!(!pre_image.run(&"zzzz".chars().collect::<Vec<_>>()));
+    assert!(!pre_image.run(&"abc".chars().collect::<Vec<_>>()));
+    assert!(!pre_image.run(&"x".chars().collect::<Vec<_>>()));
   }
 }
