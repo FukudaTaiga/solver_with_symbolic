@@ -1,7 +1,14 @@
 use crate::boolean_algebra::BoolAlg;
-use crate::regular::{regex::Regex, symbolic_automata::Sfa};
+use crate::regular::{
+  regex::{self, Regex},
+  symbolic_automata::Sfa,
+};
 use crate::state::State;
-use crate::transducer::transducer::Transducer;
+use crate::transducer::sst_factory::SstBuilder;
+use crate::transducer::{
+  term::{OutputComp, VariableImpl},
+  transducer::Transducer,
+};
 use crate::util::Domain;
 use smt2parser::{
   concrete::{Command, Constant, Identifier, QualIdentifier, Sort, Symbol, SyntaxBuilder, Term},
@@ -137,13 +144,70 @@ impl<D: Domain, S: State> Transduction<D, S> {
       _ => panic!("Syntax error: {:?}", term),
     }
   }
+
+  pub fn apply(&self, var_map: &HashMap<VarIndex, String>) -> String {
+    let mut result = String::new();
+
+    for operator in &self.0 {
+      match operator {
+        TransductionOp::Str(s) => {
+          result.push_str(&s);
+        }
+        TransductionOp::Var(idx) => {
+          result.push_str(var_map.get(&idx).unwrap());
+        }
+        TransductionOp::Reverse(idx) => {
+          result.push_str(&var_map.get(&idx).unwrap().chars().rev().collect::<String>());
+        }
+        TransductionOp::Replace(idx, from, to) => {
+          let to = match to {
+            ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(char::from(c))).collect(),
+            ReplaceTarget::Var(target_id) => var_map
+              .get(&target_id)
+              .unwrap()
+              .chars()
+              .map(|c| OutputComp::A(char::from(c)))
+              .collect(),
+          };
+          let sst =
+            SstBuilder::<char, S, VariableImpl>::replace_reg(regex::convert(from.clone()), to);
+          let chars: Vec<_> = var_map.get(&idx).unwrap().chars().collect();
+          let replaced = sst.run(&chars[..]).get(0).unwrap()[..]
+            .into_iter()
+            .collect::<String>();
+          result.push_str(&replaced);
+        }
+        TransductionOp::ReplaceAll(idx, from, to) => {
+          let to = match to {
+            ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(char::from(c))).collect(),
+            ReplaceTarget::Var(target_id) => var_map
+              .get(&target_id)
+              .unwrap()
+              .chars()
+              .map(|c| OutputComp::A(char::from(c)))
+              .collect(),
+          };
+          let sst =
+            SstBuilder::<char, S, VariableImpl>::replace_all_reg(regex::convert(from.clone()), to);
+          let chars: Vec<_> = var_map.get(&idx).unwrap().chars().collect();
+          let replaced = sst.run(&chars[..]).get(0).unwrap()[..]
+            .into_iter()
+            .collect::<String>();
+          result.push_str(&replaced);
+        }
+        TransductionOp::UserDef(_) => unimplemented!(),
+      }
+    }
+
+    result
+  }
 }
 
 pub trait Constraint {
   type Value;
 
   fn idx(&self) -> VarIndex;
-  fn constraint(self) -> Self::Value;
+  fn constraint(&self) -> &Self::Value;
 }
 #[derive(Debug, PartialEq, Clone)]
 pub struct StraightLineConstraint<D: Domain, S: State>(VarIndex, Transduction<D, S>);
@@ -153,8 +217,8 @@ impl<D: Domain, S: State> Constraint for StraightLineConstraint<D, S> {
   fn idx(&self) -> VarIndex {
     self.0
   }
-  fn constraint(self) -> Self::Value {
-    self.1
+  fn constraint(&self) -> &Self::Value {
+    &self.1
   }
 }
 #[derive(Debug, PartialEq, Clone)]
@@ -165,8 +229,8 @@ impl<D: Domain> Constraint for RegularConstraint<D> {
   fn idx(&self) -> VarIndex {
     self.0
   }
-  fn constraint(self) -> Self::Value {
-    self.1
+  fn constraint(&self) -> &Self::Value {
+    &self.1
   }
 }
 #[derive(Debug, PartialEq, Clone)]
@@ -177,12 +241,12 @@ impl Constraint for IntLinearConstraint {
   fn idx(&self) -> VarIndex {
     self.0
   }
-  fn constraint(self) -> Self::Value {
-    self.1
+  fn constraint(&self) -> &Self::Value {
+    &self.1
   }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SMTOption {
   check_sat: bool,
   get_model: bool,
@@ -198,7 +262,7 @@ impl Default for SMTOption {
   }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub enum Logic {
   QuantifierFreeString,
 }
@@ -222,7 +286,7 @@ pub enum SolverResult<B: BoolAlg> {
   UNSAT,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Smt2<D: Domain, S: State> {
   sl_constraints: Vec<StraightLineConstraint<D, S>>,
   reg_constraints: Vec<RegularConstraint<D>>,
@@ -353,7 +417,10 @@ impl<D: Domain, S: State> Smt2<D, S> {
   }
 
   pub fn filter_sl(&self, idx: VarIndex) -> Option<&StraightLineConstraint<D, S>> {
-    self.sl_constraints.iter().find(|sl_cons| sl_cons.idx() == idx)
+    self
+      .sl_constraints
+      .iter()
+      .find(|sl_cons| sl_cons.idx() == idx)
   }
 
   pub fn filter_reg(&mut self, idx: VarIndex) -> Option<Regex<D>> {
@@ -364,7 +431,7 @@ impl<D: Domain, S: State> Smt2<D, S> {
       .iter()
       .position(|reg_cons| reg_cons.idx() == idx)
     {
-      let regex = self.reg_constraints.swap_remove(i).constraint();
+      let regex = self.reg_constraints.swap_remove(i).1;
       result = Some(match result {
         Some(result) => result.inter(regex),
         None => regex,
@@ -403,30 +470,29 @@ impl<D: Domain, S: State> Smt2<D, S> {
   }
 
   pub fn to_model<B: BoolAlg>(&self, path: Vec<B>) -> HashMap<String, String> {
-    use crate::transducer::sst_factory::SstBuilder;
-    use crate::transducer::term::{OutputComp, VariableImpl};
     let mut result = HashMap::new();
     let mut idx = 0usize;
 
     path.into_iter().for_each(|predicate| {
       assert!(idx < self.vars.len());
-      
+      let s = result.entry(idx).or_insert(String::new());
+
       if predicate == B::char(B::Domain::separator()) {
         idx += 1;
       } else {
-        let s = result.entry(idx).or_insert(String::new());
         s.push(predicate.get_one().unwrap().into());
       }
     });
 
-    result.into_iter().map(|(idx, s)| (self.vars[idx].clone(), s.clone())).collect()
-  }
-}
-impl<D: Domain, S: State> Iterator for Smt2<D, S> {
-  type Item = StraightLineConstraint<D, S>;
+    while idx < self.vars.len() {
+      result.insert(idx, self.filter_sl(idx).unwrap().1.apply(&result));
+      idx += 1;
+    }
 
-  fn next(&mut self) -> Option<Self::Item> {
-    self.sl_constraints.pop()
+    result
+      .into_iter()
+      .map(|(idx, s)| (self.vars[idx].clone(), s.clone()))
+      .collect()
   }
 }
 
@@ -477,9 +543,13 @@ mod tests {
     );
     assert_eq!(None, sl_iter.next());
     let mut re_iter = smt2.reg_constraints().clone().into_iter();
-    let x1 = Regex::Element('a').concat(Regex::Element('b'));
-    let x1 = x1.clone().concat(x1.star());
-    assert_eq!(Some(RegularConstraint(1, x1)), re_iter.next());
+    assert_eq!(
+      Some(RegularConstraint(
+        1,
+        Regex::Element('a').concat(Regex::Element('b')).plus()
+      )),
+      re_iter.next()
+    );
     assert_eq!(
       Some(RegularConstraint(
         2,

@@ -7,7 +7,7 @@ use crate::transducer::{
 };
 use crate::util::{extention::MultiMap, Domain};
 use std::{
-  collections::{HashMap, HashSet},
+  collections::{BTreeMap, BTreeSet, HashMap, HashSet},
   fmt::Debug,
 };
 
@@ -46,7 +46,7 @@ where
     /* default regex .* */
     super::macros::sfa! {
       { state },
-      { -> state, (state, B::top()) -> [state] },
+      { -> state, (state, B::all_char()) -> [state] },
       { state }
     }
   }
@@ -111,6 +111,7 @@ where
   pub fn accepted_path(self) -> Option<Vec<B>> {
     let mut result = None;
     let mut paths = vec![(self.initial_state(), vec![])];
+    let mut visited = HashSet::new();
     while let Some((state, path)) = paths.pop() {
       if self.final_states.contains(state) {
         result = Some(path);
@@ -125,12 +126,17 @@ where
             if *p == *state {
               let mut path = path.clone();
               path.push(phi.clone());
-              target.into_iter().map(|q| (q, path.clone())).collect()
+              target
+                .into_iter()
+                .filter_map(|q| (!visited.contains(q)).then(|| (q, path.clone())))
+                .collect()
             } else {
               vec![]
             }
           }),
       );
+
+      visited.insert(state);
     }
 
     result
@@ -323,7 +329,29 @@ where
     Self::new(states, initial_state, final_states, transition)
   }
 
-  pub fn pre_image<V: Variable>(self, sst: SymSst<D, B, B::Term, S, V>) -> Self {
+  pub fn plus(self) -> Self {
+    let Self {
+      states,
+      initial_state,
+      final_states,
+      transition: t,
+    } = self;
+
+    let mut transition = HashMap::new();
+    t.into_iter().for_each(|((state, phi), target)| {
+      if state == initial_state {
+        final_states.iter().for_each(|final_state| {
+          transition.insert_with_check((S::clone(final_state), phi.clone()), target.clone());
+        });
+        transition.insert((S::clone(&initial_state), phi.clone()), target.clone());
+      }
+      transition.insert((state, phi), target);
+    });
+
+    Self::new(states, initial_state, final_states, transition)
+  }
+
+  pub fn pre_image_forward<V: Variable>(self, sst: SymSst<D, B, B::Term, S, V>) -> Self {
     eprintln!("preimage");
     let mut states = HashMap::new();
     let mut initial_states = HashSet::new();
@@ -367,18 +395,7 @@ where
     }
 
     {
-      let to_check: HashSet<_> = self
-        .states
-        .iter()
-        .filter(|s| {
-          reachables
-            .get(s)
-            .unwrap()
-            .iter()
-            .find(|s| self.final_states.contains(s))
-            .is_some()
-        })
-        .collect();
+      let to_check: HashSet<_> = self.states.iter().collect();
 
       for (q, output) in sst.final_set() {
         let mut possibilities = vec![(&self.initial_state, HashMap::new())];
@@ -415,13 +432,18 @@ where
       }
     }
 
-    eprintln!("start searching");
+    eprintln!(
+      "stack {:?}\n\nstart searching, {}, vars: {}",
+      stack,
+      stack.len(),
+      sst.variables().len()
+    );
 
     while let Some(tuple) = stack.pop() {
       #[cfg(test)]
       {
         if states.len() > 200 {
-          eprintln!("states: {:?}", states);
+          eprintln!("states: {:#?}", states);
           panic!("psedo stack overflow");
         }
       }
@@ -569,7 +591,271 @@ where
       }
     }
 
-    eprintln!("finish searching");
+    #[cfg(test)]
+    {
+      eprintln!("finish searching");
+      eprintln!("states map:\n{:#?}", states);
+      eprintln!("transition:\n{:#?}", transition);
+    }
+
+    let mut states: HashSet<_> = states.into_values().collect();
+    let initial_state = S::new();
+
+    states.insert(S::clone(&initial_state));
+
+    let transition_ = transition;
+    let mut transition = HashMap::new();
+
+    transition_.into_iter().for_each(|((state, phi), target)| {
+      if initial_states.contains(&state) {
+        transition.insert_with_check((S::clone(&initial_state), phi.clone()), target.clone());
+      }
+      transition.insert((state, phi), target);
+    });
+
+    if initial_states.intersection(&final_states).next().is_some() {
+      final_states.insert(S::clone(&initial_state));
+    }
+
+    if initial_states.is_empty() {
+      Self::empty()
+    } else {
+      Self::new(states, initial_state, final_states, transition)
+    }
+  }
+
+  pub fn pre_image<V: Variable>(self, sst: SymSst<D, B, B::Term, S, V>) -> Self {
+    #[cfg(test)]
+    eprintln!("preimage");
+
+    let mut states = HashMap::new();
+    let mut initial_states = HashSet::new();
+    let mut transition: HashMap<_, Vec<_>> = HashMap::new();
+    let mut final_states = HashSet::new();
+
+    let reachable_sources: HashMap<_, _> = self
+      .states()
+      .into_iter()
+      .map(|s| (s, self.reachable_sources(s)))
+      .collect();
+
+    let mut stack = vec![];
+
+    macro_rules! back_with_var {
+      ( $possibilities:ident,
+        $var_name:ident,
+        $to_check:expr,
+        | $curr:ident, $var_map:ident $(,$others:ident)* |
+      ) => {
+        $possibilities
+          .into_iter()
+          .flat_map(|($curr, $var_map, $($others),*)| {
+            let sources = reachable_sources.get(&$curr).unwrap();
+
+            sources.into_iter().filter_map(|source| {
+              $to_check.contains(source).then(|| {
+                let mut var_map = $var_map.clone();
+                let target = var_map.entry($var_name).or_insert(BTreeSet::new());
+                if target.contains(&(*source, $curr)) {
+                  (*source, var_map, $($others.clone()),*)
+                } else {
+                  target.insert((*source, $curr));
+                  (*source, var_map, $($others.clone()),*)
+                }
+              })
+            }).collect::<Vec<_>>()
+          })
+          .collect()
+      };
+    }
+
+    {
+      let to_check: HashSet<_> = self.states.iter().collect();
+
+      for (q, output) in sst.final_set() {
+        let mut possibilities = self
+          .final_states
+          .iter()
+          .map(|fs| (fs, BTreeMap::new()))
+          .collect();
+
+        for oc in output.into_iter().rev() {
+          match oc {
+            OutputComp::A(a) => {
+              possibilities = self.back(
+                possibilities,
+                |(curr, var_map), ((p1, _), p2)| (*p2 == **curr).then(|| (p1, var_map.clone())),
+                |(_, phi)| phi.denote(a),
+              );
+            }
+            OutputComp::X(x) => {
+              possibilities = back_with_var!(possibilities, x, to_check, |curr, var_map|);
+            }
+          }
+        }
+
+        possibilities.into_iter().for_each(|(p, var_map)| {
+          if *p == self.initial_state {
+            let tuple = (q, var_map);
+            stack.push(tuple.clone());
+            if let None = states.get(&tuple) {
+              let new_state = S::new();
+              final_states.insert(S::clone(&new_state));
+              states.insert(tuple, new_state);
+            }
+          }
+        });
+      }
+    }
+
+    #[cfg(test)]
+    {
+      eprintln!(
+        "start searching.\nstack_len: {}, vars_len: {}",
+        stack.len(),
+        sst.variables().len()
+      );
+    }
+
+    while let Some(tuple) = stack.pop() {
+      #[cfg(test)]
+      {
+        if states.len() > 5000 {
+          eprintln!("states: {:#?}", states);
+          panic!("psedo stack overflow");
+        }
+      }
+
+      let next = S::clone(states.get(&tuple).unwrap());
+      let (q, var_map) = tuple;
+
+      for ((q1, psi), target) in sst.transition() {
+        'add_update: for (_, alpha) in target.into_iter().filter(|(s, _)| *s == *q) {
+          let mut phi = HashMap::new();
+          let mut pre_maps: HashMap<_, Vec<_>> = HashMap::new();
+
+          for (var, nexts) in &var_map {
+            for (p1, p2) in nexts {
+              let to_check = reachable_sources.get(p2).unwrap();
+              let mut possibilities = vec![(*p2, BTreeMap::new(), B::top())];
+
+              if let Some(seq) = alpha.get(*var) {
+                for uc in seq.into_iter().rev() {
+                  match uc {
+                    UpdateComp::F(lambda) => {
+                      possibilities = self.back(
+                        possibilities,
+                        |(curr, var_map, var_phi), ((r1, phi), r2)| {
+                          (*r2 == **curr)
+                            .then(|| var_phi.and(&phi.with_lambda(lambda)))
+                            .and_then(|var_phi| {
+                              var_phi
+                                .satisfiable()
+                                .then(|| (r1, var_map.clone(), var_phi))
+                            })
+                        },
+                        |(r1, _)| to_check.contains(r1),
+                      );
+                    }
+                    UpdateComp::X(x) => {
+                      possibilities =
+                        back_with_var!(possibilities, x, to_check, |curr, var_map, var_phi|);
+                    }
+                  }
+                }
+              } else {
+                /*
+                 * if update function has no corresponding output, update with identity function
+                 * i.e. update(var) = vec![UpdateComp::X(var)]
+                 */
+                possibilities = vec![(
+                  p1,
+                  BTreeMap::from([(*var, BTreeSet::from([(*p1, *p2)]))]),
+                  B::top(),
+                )];
+              }
+
+              possibilities = possibilities
+                .into_iter()
+                .filter(|(p, _, _)| *p == *p1)
+                .collect();
+
+              if possibilities.len() != 0 {
+                possibilities.into_iter().for_each(|(_, var_map, var_phi)| {
+                  let p_phi = phi.entry((*p1, *var, *p2)).or_insert(B::bot());
+                  *p_phi = var_phi.or(p_phi);
+                  pre_maps.insert_with_check(*var, [var_map]);
+                });
+              } else {
+                continue 'add_update;
+              }
+            }
+          }
+
+          let phi = phi
+            .into_values()
+            .reduce(|phi, p_phi| phi.and(&p_phi))
+            .unwrap_or(B::boolean(var_map.is_empty()))
+            .and(psi);
+
+          if phi.satisfiable() {
+            /* calculate each combination of pre_maps */
+            let pre_maps = {
+              let mut combination = vec![BTreeMap::new()];
+
+              for pre_maps in pre_maps.into_values() {
+                combination = combination
+                  .into_iter()
+                  .flat_map(move |map| {
+                    let mut pre_maps = pre_maps.clone();
+                    pre_maps.iter_mut().for_each(|pre_map| {
+                      pre_map.merge(map.clone());
+                    });
+
+                    pre_maps
+                  })
+                  .collect();
+              }
+
+              combination
+            };
+
+            pre_maps.into_iter().for_each(|pre_map| {
+              let tuple = (q1, pre_map);
+              let source_state = match states.get(&tuple) {
+                Some(s) => S::clone(s),
+                None => {
+                  let new_state = S::new();
+                  if !stack.contains(&tuple) {
+                    stack.push(tuple.clone());
+                  }
+                  states.insert(tuple, S::clone(&new_state));
+                  new_state
+                }
+              };
+
+              let source = (source_state, phi.clone());
+              transition.insert_with_check(source, [S::clone(&next)]);
+            });
+          }
+        }
+      }
+
+      let is_initial = var_map
+        .iter()
+        .all(|(_, nexts)| nexts.into_iter().all(|(p1, p2)| **p1 == **p2));
+
+      if *q == *sst.initial_state() && is_initial {
+        initial_states.insert(next);
+      }
+    }
+
+    #[cfg(test)]
+    {
+      eprintln!("finish searching");
+      eprintln!("states map:\n{:#?}", states);
+      eprintln!("transition:\n{:#?}", transition);
+    }
 
     let mut states: HashSet<_> = states.into_values().collect();
     let initial_state = S::new();
@@ -598,13 +884,28 @@ where
   }
 
   pub fn chain(self, other: Self) -> Self {
-    self
-      .concat(super::macros::sfa! {
-        { dead, joint },
-        { -> dead, (dead, B::char(D::separator())) -> [joint] },
-        { joint }
-      })
-      .concat(other)
+    let Self {
+      mut states,
+      initial_state,
+      final_states: joint_out,
+      mut transition,
+    } = self;
+
+    let Self {
+      states: states_,
+      initial_state: joint_in,
+      final_states,
+      transition: transition_,
+    } = other;
+
+    states.extend(states_);
+    transition.extend(transition_);
+
+    for joint in joint_out {
+      transition.insert_with_check((joint, B::separator()), [S::clone(&joint_in)]);
+    }
+
+    Self::new(states, initial_state, final_states, transition)
   }
 
   pub fn finish(self) -> Self {
@@ -685,11 +986,11 @@ mod tests {
       fn $id() {
         let sst = Builder::identity(&VariableImpl::new());
         let sfa = $reg.to_sfa();
-        eprintln!("{:?}", sfa);
+        eprintln!("sfa: {:?}", sfa);
         $( assert!(sfa.run(&chars($id_ac))); )*
         $( assert!(!sfa.run(&chars($id_re))); )*
         let pre_image = sfa.pre_image(sst);
-        eprintln!("{:?}", pre_image);
+        eprintln!("preimage: {:?}", pre_image);
         $( assert!(pre_image.run(&chars($id_ac))); )*
         $( assert!(!pre_image.run(&chars($id_re))); )*
       }
@@ -698,8 +999,9 @@ mod tests {
       fn $cnst() {
           let sst = Builder::constant($constant);
           let sfa = $reg.to_sfa();
+          eprintln!("sfa: {:?}", sfa);
           let pre_image = sfa.pre_image(sst);
-          eprintln!("{:?}", pre_image);
+          eprintln!("preimage: {:?}", pre_image);
           $( assert!(pre_image.run(&chars($cnst_ac))); )*
           $( assert!(!pre_image.run(&chars($cnst_re))); )*
       }
@@ -708,8 +1010,9 @@ mod tests {
       fn $rev() {
           let sst = Builder::reverse(&VariableImpl::new());
           let sfa = $reg.to_sfa();
+          eprintln!("sfa: {:?}", sfa);
           let pre_image = sfa.pre_image(sst);
-          eprintln!("{:?}", pre_image);
+          eprintln!("preimage: {:?}", pre_image);
           $( assert!(pre_image.run(&chars($rev_ac))); )*
           $( assert!(!pre_image.run(&chars($rev_re))); )*
       }
@@ -735,12 +1038,13 @@ mod tests {
       fn $name() {
         let sst = Builder::replace_reg(Regex::seq($from), to_replacer($to));
         let sfa = $reg.to_sfa();
+        eprintln!("sfa: {:?}", sfa);
         $(
           $( assert!(sfa.run(&chars($sfa_ac))); )*
           $( assert!(!sfa.run(&chars($sfa_re))); )*
         )?
         let pre_image = sfa.pre_image(sst);
-        eprintln!("{:?}", pre_image);
+        eprintln!("preimage: {:?}", pre_image);
         $( assert!(pre_image.run(&chars(&$accept.replacen($from, $to, 1)))); )+
         $( assert!(!pre_image.run(&chars(&$reject.replacen($from, $to, 1)))); )+
       }
@@ -749,8 +1053,9 @@ mod tests {
       fn $name_all() {
         let sst = Builder::replace_all_reg(Regex::seq($from), to_replacer($to));
         let sfa = $reg.to_sfa();
+        eprintln!("sfa: {:?}", sfa);
         let pre_image = sfa.pre_image(sst);
-        eprintln!("{:?}", pre_image);
+        eprintln!("preimage: {:?}", pre_image);
         $( assert!(pre_image.run(&chars(&$accept.replace($from, $to)))); )+
         $( assert!(!pre_image.run(&chars(&$reject.replace($from, $to)))); )+
       }
@@ -812,7 +1117,7 @@ mod tests {
       fn satisfiable(&self) -> bool {
         self.0 != Regex::empty()
       }
-      fn get_one(&self) -> Result<Self::Domain, crate::boolean_algebra::NoElement> {
+      fn get_one(self) -> Result<Self::Domain, crate::boolean_algebra::NoElement> {
         unimplemented!()
       }
     }
@@ -1235,6 +1540,8 @@ mod tests {
       CharWrap::Char('u'),
       CharWrap::Char('f')
     ]));
+    assert!(!sfa.run(&vec![CharWrap::Separator,]));
+    assert!(!sfa.run(&vec![CharWrap::Separator, CharWrap::Separator,]));
     assert!(!sfa.run(&vec![
       CharWrap::Char('p'),
       CharWrap::Char('r'),
@@ -1248,5 +1555,55 @@ mod tests {
       CharWrap::Char('u'),
       CharWrap::Char('f')
     ]));
+  }
+
+  #[test]
+  fn thesis_demo() {
+    use crate::boolean_algebra::*;
+    use crate::transducer::{
+      macros,
+      term::{FunctionTerm, Lambda, VariableImpl},
+    };
+    type S = StateImpl;
+    type V = VariableImpl;
+    type P = Predicate<char>;
+    type L = Lambda<P>;
+    let (x, y) = (VariableImpl::new(), VariableImpl::new());
+    let sst = macros::sst! {
+      {p},
+      HashSet::from([x, y]),
+      {
+        -> p,
+        (p, P::top()) -> [(p, macros::make_update! [
+          x -> vec![UpdateComp::X(x.clone()), UpdateComp::F(L::identity())],
+          y -> vec![UpdateComp::F(L::identity()), UpdateComp::X(y.clone())]
+        ])]
+      },
+      {
+        p -> vec![OutputComp::X(y.clone()), OutputComp::X(x.clone())]
+      }
+    };
+    let sfa = super::super::macros::sfa! {
+      { s1, s2, s3 },
+      {
+        -> s1,
+        (s1, P::char('a')) -> [s2],
+        (s1, P::char('a').not()) -> [s3],
+        (s2, P::top()) -> [s2],
+        (s3, P::top()) -> [s3]
+      },
+      { s2 }
+    };
+
+    eprintln!("sfa {:?}", sfa);
+    eprintln!("sst {:?}", sst);
+    let pre_image = sfa.pre_image(sst);
+    eprintln!("preimage\n{:#?}", pre_image);
+    assert!(pre_image.run(&"abca".chars().collect::<Vec<_>>()));
+    assert!(pre_image.run(&"a".chars().collect::<Vec<_>>()));
+    assert!(pre_image.run(&"zzzza".chars().collect::<Vec<_>>()));
+    assert!(!pre_image.run(&"zzzz".chars().collect::<Vec<_>>()));
+    assert!(!pre_image.run(&"abc".chars().collect::<Vec<_>>()));
+    assert!(!pre_image.run(&"x".chars().collect::<Vec<_>>()));
   }
 }

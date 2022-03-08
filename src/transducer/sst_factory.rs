@@ -29,7 +29,7 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
     }
   }
 
-  pub fn generate(&self, idx: usize, transduction: Transduction<D, S>) -> Sst<D, S, V> {
+  pub fn generate(&self, idx: usize, transduction: &Transduction<D, S>) -> Sst<D, S, V> {
     assert!(transduction.0.len() != 0 && idx != 0);
 
     let mut ssts = Vec::with_capacity(idx - 1);
@@ -46,21 +46,21 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
 
     transduction
       .0
-      .into_iter()
+      .iter()
       .for_each(|transduction_op| match transduction_op {
         TransductionOp::Var(id) => {
-          assert!(id < idx);
+          assert!(*id < idx);
 
           /* argument of or_insert(..) is not lazily evaluated */
-          if let Some(var) = identities.get(&id) {
+          if let Some(var) = identities.get(id) {
             result.push(OutputComp::X(V::clone(var)));
           } else {
             let var = V::new();
             ssts
-              .get_mut(id)
+              .get_mut(*id)
               .unwrap()
               .merge(SstBuilder::identity(&var), &var);
-            identities.insert(id, V::clone(&var));
+            identities.insert(*id, V::clone(&var));
             result.push(OutputComp::X(var));
           }
         }
@@ -68,22 +68,22 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
           result.extend(s.chars().map(|c| OutputComp::A(D::from(c))));
         }
         TransductionOp::Reverse(id) => {
-          assert!(id < idx);
+          assert!(*id < idx);
 
-          if let Some(var) = reverses.get(&id) {
+          if let Some(var) = reverses.get(id) {
             result.push(OutputComp::X(V::clone(var)));
           } else {
             let var = V::new();
             ssts
-              .get_mut(id)
+              .get_mut(*id)
               .unwrap()
               .merge(SstBuilder::reverse(&var), &var);
-            reverses.insert(id, V::clone(&var));
+            reverses.insert(*id, V::clone(&var));
             result.push(OutputComp::X(var));
           }
         }
         TransductionOp::Replace(id, reg, target) => {
-          assert!(id < idx);
+          assert!(*id < idx);
 
           let replace = match target {
             ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(D::from(c))).collect(),
@@ -94,23 +94,23 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
               } else {
                 let var = V::new();
                 ssts
-                  .get_mut(target_id)
+                  .get_mut(*target_id)
                   .unwrap()
                   .merge(SstBuilder::identity(&var), &var);
-                identities.insert(target_id, V::clone(&var));
+                identities.insert(*target_id, V::clone(&var));
                 vec![OutputComp::X(var)]
               }
             }
           };
           let var = V::new();
           ssts
-            .get_mut(id)
+            .get_mut(*id)
             .unwrap()
-            .merge(SstBuilder::replace_reg(reg, replace), &var);
+            .merge(SstBuilder::replace_reg(reg.clone(), replace), &var);
           result.push(OutputComp::X(var));
         }
         TransductionOp::ReplaceAll(id, reg, target) => {
-          assert!(id < idx);
+          assert!(*id < idx);
 
           let replace = match target {
             ReplaceTarget::Str(s) => s.chars().map(|c| OutputComp::A(D::from(c))).collect(),
@@ -121,19 +121,19 @@ impl<D: Domain, S: State, V: Variable> SstBuilder<D, S, V> {
               } else {
                 let var = V::new();
                 ssts
-                  .get_mut(target_id)
+                  .get_mut(*target_id)
                   .unwrap()
                   .merge(SstBuilder::identity(&var), &var);
-                identities.insert(target_id, V::clone(&var));
+                identities.insert(*target_id, V::clone(&var));
                 vec![OutputComp::X(var)]
               }
             }
           };
           let var = V::new();
           ssts
-            .get_mut(id)
+            .get_mut(*id)
             .unwrap()
-            .merge(SstBuilder::replace_all_reg(reg, replace), &var);
+            .merge(SstBuilder::replace_all_reg(reg.clone(), replace), &var);
           result.push(OutputComp::X(var));
         }
         TransductionOp::UserDef(_) => unimplemented!(),
